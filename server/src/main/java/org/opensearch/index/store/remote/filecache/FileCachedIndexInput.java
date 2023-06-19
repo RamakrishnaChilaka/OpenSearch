@@ -23,7 +23,7 @@ import java.nio.file.Path;
  *
  * @opensearch.internal
  */
-public class FileCachedIndexInput extends CachedIndexInput implements RandomAccessInput {
+public class FileCachedIndexInput extends IndexInput implements RandomAccessInput {
 
     protected final FileCache cache;
 
@@ -150,15 +150,5 @@ public class FileCachedIndexInput extends CachedIndexInput implements RandomAcce
             }
             closed = true;
         }
-    }
-
-    /**
-     * Mainly used by File Cache to detect origin this IndexInput is closed or not
-     *
-     * @return the index input closed or not
-     */
-    @Override
-    public boolean isClosed() {
-        return closed;
     }
 }

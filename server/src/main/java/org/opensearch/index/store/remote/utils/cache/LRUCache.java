@@ -17,10 +17,12 @@ import org.opensearch.index.store.remote.utils.cache.stats.DefaultStatsCounter;
 import org.opensearch.index.store.remote.utils.cache.stats.StatsCounter;
 
 import java.util.HashMap;
-import java.util.Map;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.Objects;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.BiFunction;
+import java.util.function.Predicate;
 
 /**
  * LRU implementation of {@link RefCountedCache}. As long as {@link Node#refCount} greater than 0 then node is not eligible for eviction.
@@ -46,7 +48,7 @@ class LRUCache<K, V> implements RefCountedCache<K, V> {
     private final HashMap<K, Node<K, V>> data;
 
     /** the LRU list */
-    private final LinkedDeque<Node<K, V>> lru;
+    private final LinkedHashMap<K, Node<K, V>> lru;
 
     private final RemovalListener<K, V> listener;
 
@@ -54,7 +56,7 @@ class LRUCache<K, V> implements RefCountedCache<K, V> {
 
     private final StatsCounter<K> statsCounter;
 
-    private volatile ReentrantLock lock;
+    private final ReentrantLock lock;
 
     /**
      * this tracks cache usage on the system (as long as cache entry is in the cache)
@@ -66,16 +68,12 @@ class LRUCache<K, V> implements RefCountedCache<K, V> {
      */
     private long activeUsage;
 
-    static class Node<K, V> implements Linked<Node<K, V>> {
+    static class Node<K, V> {
         final K key;
 
         V value;
 
         long weight;
-
-        Node<K, V> prev;
-
-        Node<K, V> next;
 
         int refCount;
 
@@ -83,33 +81,11 @@ class LRUCache<K, V> implements RefCountedCache<K, V> {
             this.key = key;
             this.value = value;
             this.weight = weight;
-            this.prev = null;
-            this.next = null;
             this.refCount = 0;
-        }
-
-        public Node<K, V> getPrevious() {
-            return prev;
-        }
-
-        public void setPrevious(Node<K, V> prev) {
-            this.prev = prev;
-        }
-
-        public Node<K, V> getNext() {
-            return next;
-        }
-
-        public void setNext(Node<K, V> next) {
-            this.next = next;
         }
 
         public boolean evictable() {
             return (refCount == 0);
-        }
-
-        V getValue() {
-            return value;
         }
     }
 
@@ -118,7 +94,7 @@ class LRUCache<K, V> implements RefCountedCache<K, V> {
         this.listener = listener;
         this.weigher = weigher;
         this.data = new HashMap<>();
-        this.lru = new LinkedDeque<>();
+        this.lru = new LinkedHashMap<>();
         this.lock = new ReentrantLock();
         this.statsCounter = new DefaultStatsCounter<>();
 
@@ -127,7 +103,6 @@ class LRUCache<K, V> implements RefCountedCache<K, V> {
     @Override
     public V get(K key) {
         Objects.requireNonNull(key);
-        final ReentrantLock lock = this.lock;
         lock.lock();
         try {
             Node<K, V> node = data.get(key);
@@ -137,9 +112,7 @@ class LRUCache<K, V> implements RefCountedCache<K, V> {
                 return null;
             }
             // hit
-            if (node.evictable()) {
-                lru.moveToBack(node);
-            }
+            incRef(key);
             statsCounter.recordHits(key, 1);
             return node.value;
         } finally {
@@ -147,46 +120,20 @@ class LRUCache<K, V> implements RefCountedCache<K, V> {
         }
     }
 
-    /**
-     * If put a new item to the cache, it's zero referenced.
-     * Otherwise, just replace the node with new value and new weight.
-     */
     @Override
     public V put(K key, V value) {
         Objects.requireNonNull(key);
         Objects.requireNonNull(value);
 
-        final long weight = weigher.weightOf(value);
-        final ReentrantLock lock = this.lock;
         lock.lock();
         try {
             Node<K, V> node = data.get(key);
             if (node != null) {
                 final V oldValue = node.value;
-                final long oldWeight = node.weight;
-                // update the value and weight
-                node.value = value;
-                node.weight = weight;
-                // update usage
-                final long weightDiff = weight - oldWeight;
-                if (node.refCount > 0) {
-                    activeUsage += weightDiff;
-                }
-                if (node.evictable()) {
-                    lru.moveToBack(node);
-                }
-                usage += weightDiff;
-                // call listeners
-                statsCounter.recordReplacement();
-                listener.onRemoval(new RemovalNotification<>(key, oldValue, RemovalReason.REPLACED));
-                evict();
+                replaceNode(node, value);
                 return oldValue;
             } else {
-                Node<K, V> newNode = new Node<>(key, value, weight);
-                data.put(key, newNode);
-                lru.add(newNode);
-                usage += weight;
-                evict();
+                addNode(key, value);
                 return null;
             }
         } finally {
@@ -195,63 +142,33 @@ class LRUCache<K, V> implements RefCountedCache<K, V> {
     }
 
     @Override
-    public void putAll(Map<? extends K, ? extends V> m) {
-        for (Map.Entry<? extends K, ? extends V> e : m.entrySet())
-            put(e.getKey(), e.getValue());
-    }
-
-    @Override
-    public V computeIfPresent(K key, BiFunction<? super K, ? super V, ? extends V> remappingFunction) {
+    public V compute(K key, BiFunction<? super K, ? super V, ? extends V> remappingFunction) {
         Objects.requireNonNull(key);
-        final ReentrantLock lock = this.lock;
+        Objects.requireNonNull(remappingFunction);
         lock.lock();
         try {
-            Node<K, V> node = data.get(key);
-            if (node != null && node.value != null) {
-                V v = remappingFunction.apply(key, node.value);
-                if (v != null) {
-                    final V oldValue = node.value;
-                    final long oldWeight = node.weight;
-                    final long weight = weigher.weightOf(v);
-                    // update the value and weight
-                    node.value = v;
-                    node.weight = weight;
-
-                    // update usage
-                    final long weightDiff = weight - oldWeight;
-                    if (node.evictable()) {
-                        lru.moveToBack(node);
-                    }
-
-                    if (node.refCount > 0) {
-                        activeUsage += weightDiff;
-                    }
-
-                    usage += weightDiff;
-                    statsCounter.recordHits(key, 1);
-                    if (oldValue != node.value) {
-                        statsCounter.recordReplacement();
-                        listener.onRemoval(new RemovalNotification<>(node.key, oldValue, RemovalReason.REPLACED));
-                    }
-                    evict();
-                    return v;
+            final Node<K, V> node = data.get(key);
+            if (node == null) {
+                final V newValue = remappingFunction.apply(key, null);
+                if (newValue == null) {
+                    // Remapping function asked for removal, but nothing to remove
+                    return null;
                 } else {
-                    // is v is null, remove the item
-                    data.remove(key);
-                    if (node.refCount > 0) {
-                        activeUsage -= node.weight;
-                    }
-                    usage -= node.weight;
-                    if (node.evictable()) {
-                        lru.remove(node);
-                    }
-                    statsCounter.recordRemoval(node.weight);
-                    listener.onRemoval(new RemovalNotification<>(node.key, node.value, RemovalReason.EXPLICIT));
+                    addNode(key, newValue);
+                    statsCounter.recordMisses(key, 1);
+                    return newValue;
+                }
+            } else {
+                final V newValue = remappingFunction.apply(key, node.value);
+                if (newValue == null) {
+                    removeNode(key);
+                    return null;
+                } else {
+                    statsCounter.recordHits(key, 1);
+                    replaceNode(node, newValue);
+                    return newValue;
                 }
             }
-
-            statsCounter.recordMisses(key, 1);
-            return null;
         } finally {
             lock.unlock();
         }
@@ -260,36 +177,16 @@ class LRUCache<K, V> implements RefCountedCache<K, V> {
     @Override
     public void remove(K key) {
         Objects.requireNonNull(key);
-        final ReentrantLock lock = this.lock;
         lock.lock();
         try {
-            Node<K, V> node = data.remove(key);
-            if (node != null) {
-                if (node.refCount > 0) {
-                    activeUsage -= node.weight;
-                }
-                usage -= node.weight;
-                if (node.evictable()) {
-                    lru.remove(node);
-                }
-                statsCounter.recordRemoval(node.weight);
-                listener.onRemoval(new RemovalNotification<>(node.key, node.value, RemovalReason.EXPLICIT));
-            }
+            removeNode(key);
         } finally {
             lock.unlock();
         }
     }
 
     @Override
-    public void removeAll(Iterable<? extends K> keys) {
-        for (K key : keys) {
-            remove(key);
-        }
-    }
-
-    @Override
     public void clear() {
-        final ReentrantLock lock = this.lock;
         lock.lock();
         try {
             usage = 0L;
@@ -313,7 +210,6 @@ class LRUCache<K, V> implements RefCountedCache<K, V> {
     @Override
     public void incRef(K key) {
         Objects.requireNonNull(key);
-        final ReentrantLock lock = this.lock;
         lock.lock();
         try {
             Node<K, V> node = data.get(key);
@@ -325,7 +221,7 @@ class LRUCache<K, V> implements RefCountedCache<K, V> {
 
                 if (node.evictable()) {
                     // since it become active, we should remove it from eviction list
-                    lru.remove(node);
+                    lru.remove(node.key);
                 }
 
                 node.refCount++;
@@ -339,7 +235,6 @@ class LRUCache<K, V> implements RefCountedCache<K, V> {
     @Override
     public void decRef(K key) {
         Objects.requireNonNull(key);
-        final ReentrantLock lock = this.lock;
         lock.lock();
         try {
             Node<K, V> node = data.get(key);
@@ -348,7 +243,7 @@ class LRUCache<K, V> implements RefCountedCache<K, V> {
 
                 if (node.evictable()) {
                     // if it becomes evictable, we should add it to eviction list
-                    lru.add(node);
+                    lru.put(node.key, node);
                 }
 
                 if (node.refCount == 0) {
@@ -362,24 +257,22 @@ class LRUCache<K, V> implements RefCountedCache<K, V> {
     }
 
     @Override
-    public long prune() {
+    public long prune(Predicate<K> keyPredicate) {
         long sum = 0L;
-        final ReentrantLock lock = this.lock;
         lock.lock();
         try {
-            Node<K, V> node = lru.peek();
-            // If weighted values are used, then the pending operations will adjust
-            // the size to reflect the correct weight
-            while (node != null) {
+            final Iterator<Node<K, V>> iterator = lru.values().iterator();
+            while (iterator.hasNext()) {
+                final Node<K, V> node = iterator.next();
+                if (keyPredicate != null && !keyPredicate.test(node.key)) {
+                    continue;
+                }
+                iterator.remove();
                 data.remove(node.key, node);
                 sum += node.weight;
                 statsCounter.recordRemoval(node.weight);
                 listener.onRemoval(new RemovalNotification<>(node.key, node.value, RemovalReason.EXPLICIT));
-                Node<K, V> tmp = node;
-                node = node.getNext();
-                lru.remove(tmp);
             }
-
             usage -= sum;
         } finally {
             lock.unlock();
@@ -389,7 +282,6 @@ class LRUCache<K, V> implements RefCountedCache<K, V> {
 
     @Override
     public CacheUsage usage() {
-        final ReentrantLock lock = this.lock;
         lock.lock();
         try {
             return new CacheUsage(usage, activeUsage);
@@ -400,7 +292,6 @@ class LRUCache<K, V> implements RefCountedCache<K, V> {
 
     @Override
     public CacheStats stats() {
-        final ReentrantLock lock = this.lock;
         lock.lock();
         try {
             return statsCounter.snapshot();
@@ -409,20 +300,62 @@ class LRUCache<K, V> implements RefCountedCache<K, V> {
         }
     }
 
-    boolean hasOverflowed() {
+    private void addNode(K key, V value) {
+        final long weight = weigher.weightOf(value);
+        Node<K, V> newNode = new Node<>(key, value, weight);
+        data.put(key, newNode);
+        usage += weight;
+        incRef(key);
+        evict();
+    }
+
+    private void replaceNode(Node<K, V> node, V newValue) {
+        if (node.value != newValue) { // replace if new value is not the same instance as existing value
+            final V oldValue = node.value;
+            final long oldWeight = node.weight;
+            final long newWeight = weigher.weightOf(newValue);
+            // update the value and weight
+            node.value = newValue;
+            node.weight = newWeight;
+            // update usage
+            final long weightDiff = newWeight - oldWeight;
+            if (node.refCount > 0) {
+                activeUsage += weightDiff;
+            }
+            usage += weightDiff;
+            statsCounter.recordReplacement();
+            listener.onRemoval(new RemovalNotification<>(node.key, oldValue, RemovalReason.REPLACED));
+        }
+        incRef(node.key);
+        evict();
+    }
+
+    private void removeNode(K key) {
+        Node<K, V> node = data.remove(key);
+        if (node != null) {
+            if (node.refCount > 0) {
+                activeUsage -= node.weight;
+            }
+            usage -= node.weight;
+            if (node.evictable()) {
+                lru.remove(node.key);
+            }
+            statsCounter.recordRemoval(node.weight);
+            listener.onRemoval(new RemovalNotification<>(node.key, node.value, RemovalReason.EXPLICIT));
+        }
+    }
+
+    private boolean hasOverflowed() {
         return usage >= capacity;
     }
 
-    void evict() {
+    private void evict() {
         // Attempts to evict entries from the cache if it exceeds the maximum
         // capacity.
-        while (hasOverflowed()) {
-            final Node<K, V> node = lru.poll();
-
-            if (node == null) {
-                return;
-            }
-
+        final Iterator<Node<K, V>> iterator = lru.values().iterator();
+        while (hasOverflowed() && iterator.hasNext()) {
+            final Node<K, V> node = iterator.next();
+            iterator.remove();
             // Notify the listener only if the entry was evicted
             data.remove(node.key, node);
             usage -= node.weight;

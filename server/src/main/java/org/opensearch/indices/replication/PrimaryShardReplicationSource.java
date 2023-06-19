@@ -13,8 +13,7 @@ import org.apache.logging.log4j.Logger;
 import org.opensearch.action.ActionListener;
 import org.opensearch.cluster.node.DiscoveryNode;
 import org.opensearch.common.io.stream.Writeable;
-import org.opensearch.common.unit.TimeValue;
-import org.opensearch.index.store.Store;
+import org.opensearch.index.shard.IndexShard;
 import org.opensearch.index.store.StoreFileMetadata;
 import org.opensearch.indices.recovery.RecoverySettings;
 import org.opensearch.indices.recovery.RetryableTransportClient;
@@ -42,6 +41,7 @@ public class PrimaryShardReplicationSource implements SegmentReplicationSource {
     private final DiscoveryNode sourceNode;
     private final DiscoveryNode targetNode;
     private final String targetAllocationId;
+    private final RecoverySettings recoverySettings;
 
     public PrimaryShardReplicationSource(
         DiscoveryNode targetNode,
@@ -59,6 +59,7 @@ public class PrimaryShardReplicationSource implements SegmentReplicationSource {
         );
         this.sourceNode = sourceNode;
         this.targetNode = targetNode;
+        this.recoverySettings = recoverySettings;
     }
 
     @Override
@@ -78,22 +79,11 @@ public class PrimaryShardReplicationSource implements SegmentReplicationSource {
         long replicationId,
         ReplicationCheckpoint checkpoint,
         List<StoreFileMetadata> filesToFetch,
-        Store store,
+        IndexShard indexShard,
         ActionListener<GetSegmentFilesResponse> listener
     ) {
         final Writeable.Reader<GetSegmentFilesResponse> reader = GetSegmentFilesResponse::new;
         final ActionListener<GetSegmentFilesResponse> responseListener = ActionListener.map(listener, r -> r);
-        // Few of the below assumptions and calculations are added for experimental release of segment replication feature in 2.3
-        // version. These will be changed in next release.
-
-        // Storing the size of files to fetch in bytes.
-        final long sizeOfSegmentFiles = filesToFetch.stream().mapToLong(file -> file.length()).sum();
-
-        // Maximum size of files to fetch (segment files) in bytes, that can be processed in 1 minute for a m5.xlarge machine.
-        long baseSegmentFilesSize = 100000000;
-
-        // Formula for calculating time needed to process a replication event's files to fetch process
-        final long timeToGetSegmentFiles = 1 + (sizeOfSegmentFiles / baseSegmentFilesSize);
         final GetSegmentFilesRequest request = new GetSegmentFilesRequest(
             replicationId,
             targetAllocationId,
@@ -102,7 +92,7 @@ public class PrimaryShardReplicationSource implements SegmentReplicationSource {
             checkpoint
         );
         final TransportRequestOptions options = TransportRequestOptions.builder()
-            .withTimeout(TimeValue.timeValueMinutes(timeToGetSegmentFiles))
+            .withTimeout(recoverySettings.internalActionLongTimeout())
             .build();
         transportClient.executeRetryableAction(GET_SEGMENT_FILES, request, options, responseListener, reader);
     }

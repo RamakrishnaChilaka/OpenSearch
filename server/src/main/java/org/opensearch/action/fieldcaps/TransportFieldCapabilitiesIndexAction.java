@@ -56,7 +56,7 @@ import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.common.Nullable;
 import org.opensearch.common.inject.Inject;
 import org.opensearch.common.io.stream.StreamInput;
-import org.opensearch.common.logging.LoggerMessageFormat;
+import org.opensearch.core.common.logging.LoggerMessageFormat;
 import org.opensearch.index.mapper.MappedFieldType;
 import org.opensearch.index.mapper.MapperService;
 import org.opensearch.index.mapper.ObjectMapper;
@@ -266,7 +266,8 @@ public class TransportFieldCapabilitiesIndexAction extends HandledTransportActio
             if (shardsIt.size() == 0 || shardIndex >= shardsIt.size()) {
                 return null;
             }
-            ShardRouting next = FailAwareWeightedRouting.getInstance().findNext(shardsIt.get(shardIndex), clusterService.state(), failure);
+            ShardRouting next = FailAwareWeightedRouting.getInstance()
+                .findNext(shardsIt.get(shardIndex), clusterService.state(), failure, this::moveToNextShard);
 
             if (next != null) {
                 return next;

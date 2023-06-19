@@ -55,7 +55,6 @@ import java.util.Random;
 import java.util.Arrays;
 
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.spy;
@@ -97,7 +96,7 @@ public class SegmentReplicationTargetTests extends IndexShardTestCase {
         indexShard = newStartedShard(false, indexSettings, new NRTReplicationEngineFactory());
         spyIndexShard = spy(indexShard);
 
-        Mockito.doNothing().when(spyIndexShard).finalizeReplication(any(SegmentInfos.class), anyLong());
+        Mockito.doNothing().when(spyIndexShard).finalizeReplication(any(SegmentInfos.class));
         testSegmentInfos = spyIndexShard.store().readLastCommittedSegmentsInfo();
         buffer = new ByteBuffersDataOutput();
         try (ByteBuffersIndexOutput indexOutput = new ByteBuffersIndexOutput(buffer, "", null)) {
@@ -107,8 +106,8 @@ public class SegmentReplicationTargetTests extends IndexShardTestCase {
             spyIndexShard.shardId(),
             spyIndexShard.getPendingPrimaryTerm(),
             testSegmentInfos.getGeneration(),
-            spyIndexShard.seqNoStats().getLocalCheckpoint(),
-            testSegmentInfos.version
+            testSegmentInfos.version,
+            indexShard.getLatestReplicationCheckpoint().getCodec()
         );
     }
 
@@ -129,7 +128,7 @@ public class SegmentReplicationTargetTests extends IndexShardTestCase {
                 long replicationId,
                 ReplicationCheckpoint checkpoint,
                 List<StoreFileMetadata> filesToFetch,
-                Store store,
+                IndexShard indexShard,
                 ActionListener<GetSegmentFilesResponse> listener
             ) {
                 assertEquals(1, filesToFetch.size());
@@ -141,13 +140,13 @@ public class SegmentReplicationTargetTests extends IndexShardTestCase {
         SegmentReplicationTargetService.SegmentReplicationListener segRepListener = mock(
             SegmentReplicationTargetService.SegmentReplicationListener.class
         );
-        segrepTarget = new SegmentReplicationTarget(repCheckpoint, spyIndexShard, segrepSource, segRepListener);
+        segrepTarget = new SegmentReplicationTarget(spyIndexShard, segrepSource, segRepListener);
 
         segrepTarget.startReplication(new ActionListener<Void>() {
             @Override
             public void onResponse(Void replicationResponse) {
                 try {
-                    verify(spyIndexShard, times(1)).finalizeReplication(any(), anyLong());
+                    verify(spyIndexShard, times(1)).finalizeReplication(any());
                     segrepTarget.markAsDone();
                 } catch (IOException ex) {
                     Assert.fail();
@@ -180,7 +179,7 @@ public class SegmentReplicationTargetTests extends IndexShardTestCase {
                 long replicationId,
                 ReplicationCheckpoint checkpoint,
                 List<StoreFileMetadata> filesToFetch,
-                Store store,
+                IndexShard indexShard,
                 ActionListener<GetSegmentFilesResponse> listener
             ) {
                 listener.onResponse(new GetSegmentFilesResponse(filesToFetch));
@@ -189,7 +188,7 @@ public class SegmentReplicationTargetTests extends IndexShardTestCase {
         SegmentReplicationTargetService.SegmentReplicationListener segRepListener = mock(
             SegmentReplicationTargetService.SegmentReplicationListener.class
         );
-        segrepTarget = new SegmentReplicationTarget(repCheckpoint, spyIndexShard, segrepSource, segRepListener);
+        segrepTarget = new SegmentReplicationTarget(spyIndexShard, segrepSource, segRepListener);
 
         segrepTarget.startReplication(new ActionListener<Void>() {
             @Override
@@ -223,7 +222,7 @@ public class SegmentReplicationTargetTests extends IndexShardTestCase {
                 long replicationId,
                 ReplicationCheckpoint checkpoint,
                 List<StoreFileMetadata> filesToFetch,
-                Store store,
+                IndexShard indexShard,
                 ActionListener<GetSegmentFilesResponse> listener
             ) {
                 listener.onFailure(exception);
@@ -232,7 +231,7 @@ public class SegmentReplicationTargetTests extends IndexShardTestCase {
         SegmentReplicationTargetService.SegmentReplicationListener segRepListener = mock(
             SegmentReplicationTargetService.SegmentReplicationListener.class
         );
-        segrepTarget = new SegmentReplicationTarget(repCheckpoint, spyIndexShard, segrepSource, segRepListener);
+        segrepTarget = new SegmentReplicationTarget(spyIndexShard, segrepSource, segRepListener);
 
         segrepTarget.startReplication(new ActionListener<Void>() {
             @Override
@@ -266,7 +265,7 @@ public class SegmentReplicationTargetTests extends IndexShardTestCase {
                 long replicationId,
                 ReplicationCheckpoint checkpoint,
                 List<StoreFileMetadata> filesToFetch,
-                Store store,
+                IndexShard indexShard,
                 ActionListener<GetSegmentFilesResponse> listener
             ) {
                 listener.onResponse(new GetSegmentFilesResponse(filesToFetch));
@@ -275,9 +274,9 @@ public class SegmentReplicationTargetTests extends IndexShardTestCase {
         SegmentReplicationTargetService.SegmentReplicationListener segRepListener = mock(
             SegmentReplicationTargetService.SegmentReplicationListener.class
         );
-        segrepTarget = new SegmentReplicationTarget(repCheckpoint, spyIndexShard, segrepSource, segRepListener);
+        segrepTarget = new SegmentReplicationTarget(spyIndexShard, segrepSource, segRepListener);
 
-        doThrow(exception).when(spyIndexShard).finalizeReplication(any(), anyLong());
+        doThrow(exception).when(spyIndexShard).finalizeReplication(any());
 
         segrepTarget.startReplication(new ActionListener<Void>() {
             @Override
@@ -311,7 +310,7 @@ public class SegmentReplicationTargetTests extends IndexShardTestCase {
                 long replicationId,
                 ReplicationCheckpoint checkpoint,
                 List<StoreFileMetadata> filesToFetch,
-                Store store,
+                IndexShard indexShard,
                 ActionListener<GetSegmentFilesResponse> listener
             ) {
                 listener.onResponse(new GetSegmentFilesResponse(filesToFetch));
@@ -320,9 +319,9 @@ public class SegmentReplicationTargetTests extends IndexShardTestCase {
         SegmentReplicationTargetService.SegmentReplicationListener segRepListener = mock(
             SegmentReplicationTargetService.SegmentReplicationListener.class
         );
-        segrepTarget = new SegmentReplicationTarget(repCheckpoint, spyIndexShard, segrepSource, segRepListener);
+        segrepTarget = new SegmentReplicationTarget(spyIndexShard, segrepSource, segRepListener);
 
-        doThrow(exception).when(spyIndexShard).finalizeReplication(any(), anyLong());
+        doThrow(exception).when(spyIndexShard).finalizeReplication(any());
 
         segrepTarget.startReplication(new ActionListener<Void>() {
             @Override
@@ -355,7 +354,7 @@ public class SegmentReplicationTargetTests extends IndexShardTestCase {
                 long replicationId,
                 ReplicationCheckpoint checkpoint,
                 List<StoreFileMetadata> filesToFetch,
-                Store store,
+                IndexShard indexShard,
                 ActionListener<GetSegmentFilesResponse> listener
             ) {
                 listener.onResponse(new GetSegmentFilesResponse(filesToFetch));
@@ -364,7 +363,7 @@ public class SegmentReplicationTargetTests extends IndexShardTestCase {
         SegmentReplicationTargetService.SegmentReplicationListener segRepListener = mock(
             SegmentReplicationTargetService.SegmentReplicationListener.class
         );
-        segrepTarget = new SegmentReplicationTarget(repCheckpoint, spyIndexShard, segrepSource, segRepListener);
+        segrepTarget = new SegmentReplicationTarget(spyIndexShard, segrepSource, segRepListener);
         when(spyIndexShard.getSegmentMetadataMap()).thenReturn(SI_SNAPSHOT_DIFFERENT);
         segrepTarget.startReplication(new ActionListener<Void>() {
             @Override
@@ -374,8 +373,8 @@ public class SegmentReplicationTargetTests extends IndexShardTestCase {
 
             @Override
             public void onFailure(Exception e) {
-                assert (e instanceof IllegalStateException);
-                segrepTarget.fail(new ReplicationFailedException(e), false);
+                assert (e instanceof ReplicationFailedException);
+                assert (e.getMessage().contains("different segment files"));
             }
         });
     }
@@ -406,7 +405,7 @@ public class SegmentReplicationTargetTests extends IndexShardTestCase {
                 long replicationId,
                 ReplicationCheckpoint checkpoint,
                 List<StoreFileMetadata> filesToFetch,
-                Store store,
+                IndexShard indexShard,
                 ActionListener<GetSegmentFilesResponse> listener
             ) {
                 listener.onResponse(new GetSegmentFilesResponse(filesToFetch));
@@ -416,7 +415,7 @@ public class SegmentReplicationTargetTests extends IndexShardTestCase {
             SegmentReplicationTargetService.SegmentReplicationListener.class
         );
 
-        segrepTarget = new SegmentReplicationTarget(repCheckpoint, spyIndexShard, segrepSource, segRepListener);
+        segrepTarget = new SegmentReplicationTarget(spyIndexShard, segrepSource, segRepListener);
         when(spyIndexShard.getSegmentMetadataMap()).thenReturn(storeMetadataSnapshots.get(0).asMap());
         segrepTarget.startReplication(new ActionListener<Void>() {
             @Override

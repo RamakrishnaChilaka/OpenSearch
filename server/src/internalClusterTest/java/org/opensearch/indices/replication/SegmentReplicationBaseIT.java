@@ -8,6 +8,7 @@
 
 package org.opensearch.indices.replication;
 
+import org.opensearch.action.admin.indices.replication.SegmentReplicationStatsResponse;
 import org.opensearch.action.search.SearchResponse;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.metadata.IndexMetadata;
@@ -17,10 +18,12 @@ import org.opensearch.cluster.routing.IndexShardRoutingTable;
 import org.opensearch.cluster.routing.ShardRouting;
 import org.opensearch.common.Nullable;
 import org.opensearch.common.settings.Settings;
-import org.opensearch.common.util.FeatureFlags;
+import org.opensearch.common.lease.Releasable;
 import org.opensearch.index.Index;
 import org.opensearch.index.IndexModule;
 import org.opensearch.index.IndexService;
+import org.opensearch.index.SegmentReplicationPerGroupStats;
+import org.opensearch.index.SegmentReplicationShardStats;
 import org.opensearch.index.shard.IndexShard;
 import org.opensearch.index.store.Store;
 import org.opensearch.index.store.StoreFileMetadata;
@@ -29,12 +32,15 @@ import org.opensearch.indices.replication.common.ReplicationType;
 import org.opensearch.plugins.Plugin;
 import org.opensearch.test.OpenSearchIntegTestCase;
 import org.opensearch.test.transport.MockTransportService;
+import org.opensearch.transport.TransportService;
 
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
@@ -48,11 +54,6 @@ public class SegmentReplicationBaseIT extends OpenSearchIntegTestCase {
     protected static final String INDEX_NAME = "test-idx-1";
     protected static final int SHARD_COUNT = 1;
     protected static final int REPLICA_COUNT = 1;
-
-    @Override
-    protected Settings featureFlagSettings() {
-        return Settings.builder().put(super.featureFlagSettings()).put(FeatureFlags.REPLICATION_TYPE, "true").build();
-    }
 
     @Override
     protected Collection<Class<? extends Plugin>> nodePlugins() {
@@ -96,10 +97,6 @@ public class SegmentReplicationBaseIT extends OpenSearchIntegTestCase {
         }
     }
 
-    protected ClusterState getClusterState() {
-        return client(internalCluster().getClusterManagerName()).admin().cluster().prepareState().get().getState();
-    }
-
     protected DiscoveryNode getNodeContainingPrimaryShard() {
         final ClusterState state = getClusterState();
         final ShardRouting primaryShard = state.routingTable().index(INDEX_NAME).shard(0).primaryShard();
@@ -132,6 +129,24 @@ public class SegmentReplicationBaseIT extends OpenSearchIntegTestCase {
 
     protected void waitForSearchableDocs(long docCount, String... nodes) throws Exception {
         waitForSearchableDocs(docCount, Arrays.stream(nodes).collect(Collectors.toList()));
+    }
+
+    protected void waitForSegmentReplication(String node) throws Exception {
+        assertBusy(() -> {
+            SegmentReplicationStatsResponse segmentReplicationStatsResponse = client(node).admin()
+                .indices()
+                .prepareSegmentReplicationStats(INDEX_NAME)
+                .setDetailed(true)
+                .execute()
+                .actionGet();
+            final SegmentReplicationPerGroupStats perGroupStats = segmentReplicationStatsResponse.getReplicationStats()
+                .get(INDEX_NAME)
+                .get(0);
+            assertEquals(
+                perGroupStats.getReplicaStats().stream().findFirst().get().getCurrentReplicationState().getStage(),
+                SegmentReplicationState.Stage.DONE
+            );
+        }, 1, TimeUnit.MINUTES);
     }
 
     protected void verifyStoreContent() throws Exception {
@@ -182,4 +197,40 @@ public class SegmentReplicationBaseIT extends OpenSearchIntegTestCase {
         return indexService.getShard(shardId.get());
     }
 
+    protected Releasable blockReplication(List<String> nodes, CountDownLatch latch) {
+        CountDownLatch pauseReplicationLatch = new CountDownLatch(nodes.size());
+        for (String node : nodes) {
+
+            MockTransportService mockTargetTransportService = ((MockTransportService) internalCluster().getInstance(
+                TransportService.class,
+                node
+            ));
+            mockTargetTransportService.addSendBehavior((connection, requestId, action, request, options) -> {
+                if (action.equals(SegmentReplicationSourceService.Actions.UPDATE_VISIBLE_CHECKPOINT)) {
+                    try {
+                        latch.countDown();
+                        pauseReplicationLatch.await();
+                    } catch (InterruptedException e) {
+                        throw new RuntimeException(e);
+                    }
+                }
+                connection.sendRequest(requestId, action, request, options);
+            });
+        }
+        return () -> {
+            while (pauseReplicationLatch.getCount() > 0) {
+                pauseReplicationLatch.countDown();
+            }
+        };
+    }
+
+    protected void assertReplicaCheckpointUpdated(IndexShard primaryShard) throws Exception {
+        assertBusy(() -> {
+            Set<SegmentReplicationShardStats> groupStats = primaryShard.getReplicationStats();
+            assertEquals(primaryShard.indexSettings().getNumberOfReplicas(), groupStats.size());
+            for (SegmentReplicationShardStats shardStat : groupStats) {
+                assertEquals(0, shardStat.getCheckpointsBehindCount());
+            }
+        }, 30, TimeUnit.SECONDS);
+    }
 }

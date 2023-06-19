@@ -162,7 +162,12 @@ public class Setting<T> implements ToXContentObject {
         /**
          * Indicates an index-level setting that is privately managed. Such a setting can not even be set on index creation.
          */
-        PrivateIndex
+        PrivateIndex,
+
+        /**
+         * Extension scope
+         */
+        ExtensionScope
     }
 
     private final Key key;
@@ -170,7 +175,7 @@ public class Setting<T> implements ToXContentObject {
     @Nullable
     protected final Setting<T> fallbackSetting;
     protected final Function<String, T> parser;
-    private final Validator<T> validator;
+    protected final Validator<T> validator;
     private final EnumSet<Property> properties;
 
     private static final EnumSet<Property> EMPTY_PROPERTIES = EnumSet.noneOf(Property.class);
@@ -1248,6 +1253,55 @@ public class Setting<T> implements ToXContentObject {
 
     private static boolean isFiltered(Property[] properties) {
         return properties != null && Arrays.asList(properties).contains(Property.Filtered);
+    }
+
+    /**
+     * A writeable validator able to check the value of string type custom setting by using regular expression
+     */
+    public static class RegexValidator implements Writeable, Validator<String> {
+        private Pattern pattern;
+
+        private boolean isMatching;
+
+        /**
+         * @param regex A regular expression containing the only valid input for this setting.
+         */
+        public RegexValidator(String regex) {
+            this(regex, true);
+        }
+
+        /**
+         * @param regex constructs a validator based on a regular expression.
+         * @param isMatching If true, the setting must match the given regex. If false, the setting must not match the given regex.
+         */
+        public RegexValidator(String regex, boolean isMatching) {
+            this.pattern = Pattern.compile(regex);
+            this.isMatching = isMatching;
+        }
+
+        public RegexValidator(StreamInput in) throws IOException {
+            this.pattern = Pattern.compile(in.readString());
+            this.isMatching = in.readBoolean();
+        }
+
+        Pattern getPattern() {
+            return pattern;
+        }
+
+        @Override
+        public void validate(String value) {
+            if (isMatching && !pattern.matcher(value).find()) {
+                throw new IllegalArgumentException("Setting [" + value + "] does not match regex [" + pattern.pattern() + "]");
+            } else if (!isMatching && pattern.matcher(value).find()) {
+                throw new IllegalArgumentException("Setting [" + value + "] must match regex [" + pattern.pattern() + "]");
+            }
+        }
+
+        @Override
+        public void writeTo(StreamOutput out) throws IOException {
+            out.writeString(pattern.pattern());
+            out.writeBoolean(isMatching);
+        }
     }
 
     // Float

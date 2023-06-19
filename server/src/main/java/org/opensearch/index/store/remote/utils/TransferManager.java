@@ -13,6 +13,7 @@ import org.apache.logging.log4j.Logger;
 import org.apache.lucene.store.IOContext;
 import org.apache.lucene.store.IndexInput;
 import org.opensearch.common.blobstore.BlobContainer;
+import org.opensearch.index.store.remote.filecache.CachedIndexInput;
 import org.opensearch.index.store.remote.filecache.FileCache;
 import org.opensearch.index.store.remote.filecache.FileCachedIndexInput;
 
@@ -20,9 +21,14 @@ import java.io.BufferedOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.Objects;
+import java.security.AccessController;
+import java.security.PrivilegedAction;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * This acts as entry point to fetch {@link BlobFetchRequest} and return actual {@link IndexInput}. Utilizes the BlobContainer interface to
@@ -34,12 +40,10 @@ public class TransferManager {
     private static final Logger logger = LogManager.getLogger(TransferManager.class);
 
     private final BlobContainer blobContainer;
-    private final ConcurrentInvocationLinearizer<Path, IndexInput> invocationLinearizer;
     private final FileCache fileCache;
 
     public TransferManager(final BlobContainer blobContainer, final FileCache fileCache) {
         this.blobContainer = blobContainer;
-        this.invocationLinearizer = new ConcurrentInvocationLinearizer<>();
         this.fileCache = fileCache;
     }
 
@@ -48,67 +52,127 @@ public class TransferManager {
      * @param blobFetchRequest to fetch
      * @return future of IndexInput augmented with internal caching maintenance tasks
      */
-    public IndexInput fetchBlob(BlobFetchRequest blobFetchRequest) throws InterruptedException, IOException {
-        final IndexInput indexInput = invocationLinearizer.linearize(
-            blobFetchRequest.getFilePath(),
-            p -> fetchOriginBlob(blobFetchRequest)
-        );
-        return indexInput.clone();
+    public IndexInput fetchBlob(BlobFetchRequest blobFetchRequest) throws IOException {
+        final Path key = blobFetchRequest.getFilePath();
+
+        final CachedIndexInput cacheEntry = fileCache.compute(key, (path, cachedIndexInput) -> {
+            if (cachedIndexInput == null || cachedIndexInput.isClosed()) {
+                // Doesn't exist or is closed, either way create a new one
+                return new DelayedCreationCachedIndexInput(fileCache, blobContainer, blobFetchRequest);
+            } else {
+                // already in the cache and ready to be used (open)
+                return cachedIndexInput;
+            }
+        });
+
+        // Cache entry was either retrieved from the cache or newly added, either
+        // way the reference count has been incremented by one. We can only
+        // decrement this reference _after_ creating the clone to be returned.
+        try {
+            return cacheEntry.getIndexInput().clone();
+        } finally {
+            fileCache.decRef(key);
+        }
+    }
+
+    private static FileCachedIndexInput createIndexInput(FileCache fileCache, BlobContainer blobContainer, BlobFetchRequest request) {
+        // We need to do a privileged action here in order to fetch from remote
+        // and write to the local file cache in case this is invoked as a side
+        // effect of a plugin (such as a scripted search) that doesn't have the
+        // necessary permissions.
+        return AccessController.doPrivileged((PrivilegedAction<FileCachedIndexInput>) () -> {
+            try {
+                if (Files.exists(request.getFilePath()) == false) {
+                    try (
+                        InputStream snapshotFileInputStream = blobContainer.readBlob(
+                            request.getBlobName(),
+                            request.getPosition(),
+                            request.getLength()
+                        );
+                        OutputStream fileOutputStream = Files.newOutputStream(request.getFilePath());
+                        OutputStream localFileOutputStream = new BufferedOutputStream(fileOutputStream)
+                    ) {
+                        snapshotFileInputStream.transferTo(localFileOutputStream);
+                    }
+                }
+                final IndexInput luceneIndexInput = request.getDirectory().openInput(request.getFileName(), IOContext.READ);
+                return new FileCachedIndexInput(fileCache, request.getFilePath(), luceneIndexInput);
+            } catch (IOException e) {
+                throw new UncheckedIOException(e);
+            }
+        });
     }
 
     /**
-     * Fetches the "origin" IndexInput from the cache, downloading it first if it is
-     * not already cached. This instance must be cloned before using. This method is
-     * accessed through the ConcurrentInvocationLinearizer so read-check-write is
-     * acceptable here
+     * Implementation of CachedIndexInput the defers creation of the underlying
+     * IndexInput until the first invocation of {@link #getIndexInput()}. This
+     * class is thread safe, and concurrent calls to {@link #getIndexInput()} will
+     * result in blocking until the initial thread completes the creation of the
+     * IndexInput.
      */
-    private IndexInput fetchOriginBlob(BlobFetchRequest blobFetchRequest) throws IOException {
-        // check if the origin is already in block cache
-        IndexInput origin = fileCache.computeIfPresent(blobFetchRequest.getFilePath(), (path, cachedIndexInput) -> {
-            if (cachedIndexInput.isClosed()) {
-                // if it's already in the file cache, but closed, open it and replace the original one
-                try {
-                    IndexInput luceneIndexInput = blobFetchRequest.getDirectory().openInput(blobFetchRequest.getFileName(), IOContext.READ);
-                    return new FileCachedIndexInput(fileCache, blobFetchRequest.getFilePath(), luceneIndexInput);
-                } catch (IOException ioe) {
-                    logger.warn("Open index input " + blobFetchRequest.getFilePath() + " got error ", ioe);
-                    // open failed so return null to download the file again
-                    return null;
-                }
+    private static class DelayedCreationCachedIndexInput implements CachedIndexInput {
+        private final FileCache fileCache;
+        private final BlobContainer blobContainer;
+        private final BlobFetchRequest request;
+        private final CompletableFuture<IndexInput> result = new CompletableFuture<>();
+        private final AtomicBoolean isStarted = new AtomicBoolean(false);
+        private final AtomicBoolean isClosed = new AtomicBoolean(false);
 
+        private DelayedCreationCachedIndexInput(FileCache fileCache, BlobContainer blobContainer, BlobFetchRequest request) {
+            this.fileCache = fileCache;
+            this.blobContainer = blobContainer;
+            this.request = request;
+        }
+
+        @Override
+        public IndexInput getIndexInput() throws IOException {
+            if (isClosed.get()) {
+                throw new IllegalStateException("Already closed");
             }
-            // already in the cache and ready to be used (open)
-            return cachedIndexInput;
-        });
-
-        if (Objects.isNull(origin)) {
-            // origin is not in file cache, download origin
-
-            // open new origin
-            IndexInput downloaded = downloadBlockLocally(blobFetchRequest);
-
-            // refcount = 0 at the beginning
-            FileCachedIndexInput newOrigin = new FileCachedIndexInput(fileCache, blobFetchRequest.getFilePath(), downloaded);
-
-            // put origin into file cache
-            fileCache.put(blobFetchRequest.getFilePath(), newOrigin);
-            origin = newOrigin;
+            if (isStarted.getAndSet(true) == false) {
+                // We're the first one here, need to download the block
+                try {
+                    result.complete(createIndexInput(fileCache, blobContainer, request));
+                } catch (Exception e) {
+                    result.completeExceptionally(e);
+                    fileCache.remove(request.getFilePath());
+                }
+            }
+            try {
+                return result.join();
+            } catch (CompletionException e) {
+                if (e.getCause() instanceof UncheckedIOException) {
+                    throw ((UncheckedIOException) e.getCause()).getCause();
+                } else if (e.getCause() instanceof RuntimeException) {
+                    throw (RuntimeException) e.getCause();
+                }
+                throw e;
+            }
         }
-        return origin;
-    }
 
-    private IndexInput downloadBlockLocally(BlobFetchRequest blobFetchRequest) throws IOException {
-        try (
-            InputStream snapshotFileInputStream = blobContainer.readBlob(
-                blobFetchRequest.getBlobName(),
-                blobFetchRequest.getPosition(),
-                blobFetchRequest.getLength()
-            );
-            OutputStream fileOutputStream = Files.newOutputStream(blobFetchRequest.getFilePath());
-            OutputStream localFileOutputStream = new BufferedOutputStream(fileOutputStream);
-        ) {
-            snapshotFileInputStream.transferTo(localFileOutputStream);
+        @Override
+        public long length() {
+            return request.getLength();
         }
-        return blobFetchRequest.getDirectory().openInput(blobFetchRequest.getFileName(), IOContext.READ);
+
+        @Override
+        public boolean isClosed() {
+            return isClosed.get();
+        }
+
+        @Override
+        public void close() throws Exception {
+            if (isClosed.getAndSet(true) == false) {
+                result.whenComplete((indexInput, error) -> {
+                    if (indexInput != null) {
+                        try {
+                            indexInput.close();
+                        } catch (IOException e) {
+                            logger.warn("Error closing IndexInput", e);
+                        }
+                    }
+                });
+            }
+        }
     }
 }

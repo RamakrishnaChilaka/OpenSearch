@@ -34,6 +34,7 @@ public class DiscoveryExtensionNode extends DiscoveryNode implements Writeable, 
 
     private Version minimumCompatibleVersion;
     private List<ExtensionDependency> dependencies = Collections.emptyList();
+    private List<String> implementedInterfaces = Collections.emptyList();
 
     public DiscoveryExtensionNode(
         String name,
@@ -53,7 +54,7 @@ public class DiscoveryExtensionNode extends DiscoveryNode implements Writeable, 
     @Override
     public void writeTo(StreamOutput out) throws IOException {
         super.writeTo(out);
-        Version.writeVersion(minimumCompatibleVersion, out);
+        out.writeVersion(minimumCompatibleVersion);
         out.writeVInt(dependencies.size());
         for (ExtensionDependency dependency : dependencies) {
             dependency.writeTo(out);
@@ -68,7 +69,7 @@ public class DiscoveryExtensionNode extends DiscoveryNode implements Writeable, 
      */
     public DiscoveryExtensionNode(final StreamInput in) throws IOException {
         super(in);
-        minimumCompatibleVersion = Version.readVersion(in);
+        minimumCompatibleVersion = in.readVersion();
         int size = in.readVInt();
         dependencies = new ArrayList<>(size);
         for (int i = 0; i < size; i++) {
@@ -82,6 +83,14 @@ public class DiscoveryExtensionNode extends DiscoveryNode implements Writeable, 
 
     public Version getMinimumCompatibleVersion() {
         return minimumCompatibleVersion;
+    }
+
+    public List<String> getImplementedInterfaces() {
+        return implementedInterfaces;
+    }
+
+    public void setImplementedInterfaces(List<String> implementedInterfaces) {
+        this.implementedInterfaces = implementedInterfaces;
     }
 
     public boolean dependenciesContain(ExtensionDependency dependency) {

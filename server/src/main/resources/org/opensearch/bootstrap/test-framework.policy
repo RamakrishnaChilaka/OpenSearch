@@ -128,9 +128,13 @@ grant codeBase "${codebase.httpasyncclient}" {
   permission java.net.NetPermission "getProxySelector";
 };
 
-
 grant codeBase "${codebase.junit-rt.jar}" {
   // allows IntelliJ IDEA JUnit test runner to control number of test iterations
+  permission java.lang.reflect.ReflectPermission "suppressAccessChecks";
+};
+
+grant codeBase "${codebase.idea_rt.jar}" {
+  // allows IntelliJ IDEA (2022.3.3) JUnit test runner to control number of test iterations
   permission java.lang.reflect.ReflectPermission "suppressAccessChecks";
 };
 
@@ -149,4 +153,8 @@ grant codeBase "file:${gradle.worker.jar}" {
 grant {
   // since the gradle test worker jar is on the test classpath, our tests should be able to read it
   permission java.io.FilePermission "${gradle.worker.jar}", "read";
+  permission java.lang.RuntimePermission "accessDeclaredMembers";
+  permission java.lang.RuntimePermission "reflectionFactoryAccess";
+  permission java.lang.RuntimePermission "accessClassInPackage.sun.reflect";
+  permission java.lang.reflect.ReflectPermission "suppressAccessChecks";
 };

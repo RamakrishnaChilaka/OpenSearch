@@ -49,7 +49,7 @@ import org.apache.lucene.tests.store.BaseDirectoryWrapper;
 import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.Constants;
 import org.junit.Assert;
-import org.opensearch.Assertions;
+import org.opensearch.core.Assertions;
 import org.opensearch.OpenSearchException;
 import org.opensearch.Version;
 import org.opensearch.action.ActionListener;
@@ -80,18 +80,18 @@ import org.opensearch.common.collect.Tuple;
 import org.opensearch.common.concurrent.GatedCloseable;
 import org.opensearch.common.io.stream.BytesStreamOutput;
 import org.opensearch.common.io.stream.StreamInput;
-import org.opensearch.common.lease.Releasable;
-import org.opensearch.common.lease.Releasables;
 import org.opensearch.common.settings.IndexScopedSettings;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.common.unit.TimeValue;
 import org.opensearch.common.util.concurrent.AbstractRunnable;
 import org.opensearch.common.util.concurrent.AtomicArray;
 import org.opensearch.common.util.concurrent.ConcurrentCollections;
-import org.opensearch.core.xcontent.NamedXContentRegistry;
-import org.opensearch.core.xcontent.XContentBuilder;
 import org.opensearch.common.xcontent.XContentFactory;
 import org.opensearch.common.xcontent.XContentType;
+import org.opensearch.common.lease.Releasable;
+import org.opensearch.common.lease.Releasables;
+import org.opensearch.core.xcontent.NamedXContentRegistry;
+import org.opensearch.core.xcontent.XContentBuilder;
 import org.opensearch.env.NodeEnvironment;
 import org.opensearch.index.IndexSettings;
 import org.opensearch.index.codec.CodecService;
@@ -170,6 +170,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.BrokenBarrierException;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CyclicBarrier;
@@ -290,7 +291,7 @@ public class IndexShardTests extends IndexShardTestCase {
         assertNotNull(shardPath);
         // fail shard
         shard.failShard("test shard fail", new CorruptIndexException("", ""));
-        shard.close("do not assert history", false);
+        shard.close("do not assert history", false, false);
         shard.store().close();
         // check state file still exists
         ShardStateMetadata shardStateMetadata = load(logger, shardPath.getShardStatePath());
@@ -1613,7 +1614,7 @@ public class IndexShardTests extends IndexShardTestCase {
         snapshot = newShard.snapshotStoreMetadata();
         assertThat(snapshot.getSegmentsFile().name(), equalTo("segments_3"));
 
-        newShard.close("test", false);
+        newShard.close("test", false, false);
 
         snapshot = newShard.snapshotStoreMetadata();
         assertThat(snapshot.getSegmentsFile().name(), equalTo("segments_3"));
@@ -1873,7 +1874,7 @@ public class IndexShardTests extends IndexShardTestCase {
         AtomicInteger preDelete = new AtomicInteger();
         AtomicInteger postDelete = new AtomicInteger();
         AtomicInteger postDeleteException = new AtomicInteger();
-        shard.close("simon says", true);
+        shard.close("simon says", true, false);
         shard = reinitShard(shard, new IndexingOperationListener() {
             @Override
             public Engine.Index preIndex(ShardId shardId, Engine.Index operation) {
@@ -1960,7 +1961,7 @@ public class IndexShardTests extends IndexShardTestCase {
         assertEquals(1, postDelete.get());
         assertEquals(0, postDeleteException.get());
 
-        shard.close("Unexpected close", true);
+        shard.close("Unexpected close", true, false);
         shard.state = IndexShardState.STARTED; // It will generate exception
 
         try {
@@ -2174,11 +2175,9 @@ public class IndexShardTests extends IndexShardTestCase {
         IndexShardTestCase.updateRoutingEntry(shard, routing);
         ReplicationFailedException segRepException = expectThrows(
             ReplicationFailedException.class,
-            () -> shard.relocated(
-                routing.getTargetRelocatingShard().allocationId().getId(),
-                primaryContext -> {},
-                () -> { throw new ReplicationFailedException("Segment replication failed"); }
-            )
+            () -> shard.relocated(routing.getTargetRelocatingShard().allocationId().getId(), primaryContext -> {}, () -> {
+                throw new ReplicationFailedException("Segment replication failed");
+            })
         );
         assertTrue(segRepException.getMessage().equals("Segment replication failed"));
         closeShards(shard);
@@ -2299,6 +2298,7 @@ public class IndexShardTests extends IndexShardTestCase {
         shard.applyDeleteOperationOnReplica(1, primaryTerm, 2, "id");
         shard.getEngine().translogManager().rollTranslogGeneration(); // isolate the delete in it's own generation
         shard.applyIndexOperationOnReplica(
+            UUID.randomUUID().toString(),
             0,
             primaryTerm,
             1,
@@ -2307,6 +2307,7 @@ public class IndexShardTests extends IndexShardTestCase {
             new SourceToParse(shard.shardId().getIndexName(), "id", new BytesArray("{}"), XContentType.JSON)
         );
         shard.applyIndexOperationOnReplica(
+            UUID.randomUUID().toString(),
             3,
             primaryTerm,
             3,
@@ -2317,6 +2318,7 @@ public class IndexShardTests extends IndexShardTestCase {
         // Flushing a new commit with local checkpoint=1 allows to skip the translog gen #1 in recovery.
         shard.flush(new FlushRequest().force(true).waitIfOngoing(true));
         shard.applyIndexOperationOnReplica(
+            UUID.randomUUID().toString(),
             2,
             primaryTerm,
             3,
@@ -2325,6 +2327,7 @@ public class IndexShardTests extends IndexShardTestCase {
             new SourceToParse(shard.shardId().getIndexName(), "id-2", new BytesArray("{}"), XContentType.JSON)
         );
         shard.applyIndexOperationOnReplica(
+            UUID.randomUUID().toString(),
             5,
             primaryTerm,
             1,
@@ -2472,6 +2475,7 @@ public class IndexShardTests extends IndexShardTestCase {
         updateMappings(otherShard, shard.indexSettings().getIndexMetadata());
         SourceToParse sourceToParse = new SourceToParse(shard.shardId().getIndexName(), "1", new BytesArray("{}"), XContentType.JSON);
         otherShard.applyIndexOperationOnReplica(
+            UUID.randomUUID().toString(),
             1,
             otherShard.getOperationPrimaryTerm(),
             1,
@@ -2599,6 +2603,7 @@ public class IndexShardTests extends IndexShardTestCase {
         final String indexName = shard.shardId().getIndexName();
         // Index #0, index #1
         shard.applyIndexOperationOnReplica(
+            UUID.randomUUID().toString(),
             0,
             primaryTerm,
             1,
@@ -2609,6 +2614,7 @@ public class IndexShardTests extends IndexShardTestCase {
         flushShard(shard);
         shard.updateGlobalCheckpointOnReplica(0, "test"); // stick the global checkpoint here.
         shard.applyIndexOperationOnReplica(
+            UUID.randomUUID().toString(),
             1,
             primaryTerm,
             1,
@@ -2621,6 +2627,7 @@ public class IndexShardTests extends IndexShardTestCase {
         shard.getEngine().translogManager().rollTranslogGeneration();
         shard.markSeqNoAsNoop(1, primaryTerm, "test");
         shard.applyIndexOperationOnReplica(
+            UUID.randomUUID().toString(),
             2,
             primaryTerm,
             1,
@@ -2866,7 +2873,7 @@ public class IndexShardTests extends IndexShardTestCase {
         DiscoveryNode localNode = new DiscoveryNode("foo", buildNewFakeTransportAddress(), emptyMap(), emptySet(), Version.CURRENT);
         target.markAsRecovering("remote_store", new RecoveryState(routing, localNode, null));
         final PlainActionFuture<Boolean> future = PlainActionFuture.newFuture();
-        target.restoreFromRemoteStore(null, future);
+        target.restoreFromRemoteStore(future);
         target.remoteStore().decRef();
 
         assertTrue(future.actionGet());
@@ -2961,11 +2968,9 @@ public class IndexShardTests extends IndexShardTestCase {
             new NoneCircuitBreakerService(),
             shard.mapperService()
         );
-        IndexFieldData.Global ifd = indexFieldDataService.getForField(
-            foo,
-            "test",
-            () -> { throw new UnsupportedOperationException("search lookup not available"); }
-        );
+        IndexFieldData.Global ifd = indexFieldDataService.getForField(foo, "test", () -> {
+            throw new UnsupportedOperationException("search lookup not available");
+        });
         FieldDataStats before = shard.fieldData().stats("foo");
         assertThat(before.getMemorySizeInBytes(), equalTo(0L));
         FieldDataStats after = null;
@@ -4013,6 +4018,7 @@ public class IndexShardTests extends IndexShardTestCase {
                     XContentType.JSON
                 );
                 indexShard.applyIndexOperationOnReplica(
+                    UUID.randomUUID().toString(),
                     i,
                     indexShard.getOperationPrimaryTerm(),
                     1,
@@ -4356,7 +4362,7 @@ public class IndexShardTests extends IndexShardTestCase {
         Thread closeShardThread = new Thread(() -> {
             try {
                 readyToCloseLatch.await();
-                shard.close("testing", false);
+                shard.close("testing", false, false);
                 // in integration tests, this is done as a listener on IndexService.
                 MockFSDirectoryFactory.checkIndex(logger, shard.store(), shard.shardId);
             } catch (InterruptedException | IOException e) {
@@ -4637,6 +4643,7 @@ public class IndexShardTests extends IndexShardTestCase {
                 seqNo++; // create gaps in sequence numbers
             }
             shard.applyIndexOperationOnReplica(
+                UUID.randomUUID().toString(),
                 seqNo,
                 shard.getOperationPrimaryTerm(),
                 1,
@@ -4804,7 +4811,7 @@ public class IndexShardTests extends IndexShardTestCase {
         recoveryThread.start();
         try {
             warmerStarted.await();
-            shard.close("testing", false);
+            shard.close("testing", false, false);
             assertThat(shard.state, equalTo(IndexShardState.CLOSED));
         } finally {
             warmerBlocking.countDown();
