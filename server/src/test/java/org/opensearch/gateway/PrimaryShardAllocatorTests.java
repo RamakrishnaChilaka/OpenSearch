@@ -60,14 +60,17 @@ import org.opensearch.common.Nullable;
 import org.opensearch.common.UUIDs;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.common.util.set.Sets;
+import org.opensearch.core.index.shard.ShardId;
+import org.opensearch.env.Environment;
 import org.opensearch.env.ShardLockObtainFailedException;
+import org.opensearch.index.IndexSettings;
 import org.opensearch.index.codec.CodecService;
-import org.opensearch.index.shard.ShardId;
 import org.opensearch.indices.replication.checkpoint.ReplicationCheckpoint;
 import org.opensearch.repositories.IndexId;
 import org.opensearch.snapshots.Snapshot;
 import org.opensearch.snapshots.SnapshotId;
 import org.opensearch.snapshots.SnapshotShardSizeInfo;
+import org.opensearch.test.IndexSettingsModule;
 import org.junit.Before;
 
 import java.util.Arrays;
@@ -803,21 +806,25 @@ public class PrimaryShardAllocatorTests extends OpenSearchAllocationTestCase {
         }
 
         public TestAllocator addData(DiscoveryNode node, String allocationId, boolean primary) {
+            Settings nodeSettings = Settings.builder().put(Environment.PATH_HOME_SETTING.getKey(), createTempDir()).build();
+            IndexSettings indexSettings = IndexSettingsModule.newIndexSettings("test", nodeSettings);
             return addData(
                 node,
                 allocationId,
                 primary,
-                ReplicationCheckpoint.empty(shardId, new CodecService(null, null).codec("default").getName()),
+                ReplicationCheckpoint.empty(shardId, new CodecService(null, indexSettings, null).codec("default").getName()),
                 null
             );
         }
 
         public TestAllocator addData(DiscoveryNode node, String allocationId, boolean primary, @Nullable Exception storeException) {
+            Settings nodeSettings = Settings.builder().put(Environment.PATH_HOME_SETTING.getKey(), createTempDir()).build();
+            IndexSettings indexSettings = IndexSettingsModule.newIndexSettings("test", nodeSettings);
             return addData(
                 node,
                 allocationId,
                 primary,
-                ReplicationCheckpoint.empty(shardId, new CodecService(null, null).codec("default").getName()),
+                ReplicationCheckpoint.empty(shardId, new CodecService(null, indexSettings, null).codec("default").getName()),
                 storeException
             );
         }
@@ -836,10 +843,12 @@ public class PrimaryShardAllocatorTests extends OpenSearchAllocationTestCase {
                 node,
                 new TransportNodesListGatewayStartedShards.NodeGatewayStartedShards(
                     node,
-                    allocationId,
-                    primary,
-                    replicationCheckpoint,
-                    storeException
+                    new TransportNodesGatewayStartedShardHelper.GatewayStartedShard(
+                        allocationId,
+                        primary,
+                        replicationCheckpoint,
+                        storeException
+                    )
                 )
             );
             return this;
@@ -850,7 +859,11 @@ public class PrimaryShardAllocatorTests extends OpenSearchAllocationTestCase {
             ShardRouting shard,
             RoutingAllocation allocation
         ) {
-            return new AsyncShardFetch.FetchResult<>(shardId, data, Collections.<String>emptySet());
+            return new AsyncShardFetch.FetchResult<>(data, new HashMap<>() {
+                {
+                    put(shardId, Collections.<String>emptySet());
+                }
+            });
         }
     }
 }

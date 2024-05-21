@@ -32,14 +32,14 @@
 
 package org.opensearch.action.get;
 
-import org.opensearch.BaseOpenSearchException;
 import org.opensearch.OpenSearchException;
 import org.opensearch.Version;
-import org.opensearch.action.ActionResponse;
-import org.opensearch.common.io.stream.StreamInput;
-import org.opensearch.common.io.stream.StreamOutput;
-import org.opensearch.common.io.stream.Writeable;
+import org.opensearch.common.annotation.PublicApi;
 import org.opensearch.core.ParseField;
+import org.opensearch.core.action.ActionResponse;
+import org.opensearch.core.common.io.stream.StreamInput;
+import org.opensearch.core.common.io.stream.StreamOutput;
+import org.opensearch.core.common.io.stream.Writeable;
 import org.opensearch.core.xcontent.ToXContentObject;
 import org.opensearch.core.xcontent.XContentBuilder;
 import org.opensearch.core.xcontent.XContentParser;
@@ -56,8 +56,9 @@ import java.util.List;
 /**
  * Transport response for a multi get.
  *
- * @opensearch.internal
+ * @opensearch.api
  */
+@PublicApi(since = "1.0.0")
 public class MultiGetResponse extends ActionResponse implements Iterable<MultiGetItemResponse>, ToXContentObject {
 
     private static final ParseField INDEX = new ParseField("_index");
@@ -72,8 +73,9 @@ public class MultiGetResponse extends ActionResponse implements Iterable<MultiGe
     /**
      * Represents a failure.
      *
-     * @opensearch.internal
+     * @opensearch.api
      */
+    @PublicApi(since = "1.0.0")
     public static class Failure implements Writeable, ToXContentObject {
 
         private final String index;
@@ -131,7 +133,7 @@ public class MultiGetResponse extends ActionResponse implements Iterable<MultiGe
             builder.startObject();
             builder.field(INDEX.getPreferredName(), index);
             builder.field(ID.getPreferredName(), id);
-            BaseOpenSearchException.generateFailureXContent(builder, params, exception, true);
+            OpenSearchException.generateFailureXContent(builder, params, exception, true);
             builder.endObject();
             return builder;
         }

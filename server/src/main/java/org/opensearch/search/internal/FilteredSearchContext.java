@@ -50,6 +50,7 @@ import org.opensearch.index.shard.IndexShard;
 import org.opensearch.index.similarity.SimilarityService;
 import org.opensearch.search.SearchExtBuilder;
 import org.opensearch.search.SearchShardTarget;
+import org.opensearch.search.aggregations.BucketCollectorProcessor;
 import org.opensearch.search.aggregations.InternalAggregation;
 import org.opensearch.search.aggregations.SearchContextAggregations;
 import org.opensearch.search.collapse.CollapseContext;
@@ -339,6 +340,14 @@ public abstract class FilteredSearchContext extends SearchContext {
         return in.searchAfter();
     }
 
+    public SearchContext includeNamedQueriesScore(boolean includeNamedQueriesScore) {
+        return in.includeNamedQueriesScore(includeNamedQueriesScore);
+    }
+
+    public boolean includeNamedQueriesScore() {
+        return in.includeNamedQueriesScore();
+    }
+
     @Override
     public SearchContext parsedPostFilter(ParsedQuery postFilter) {
         return in.parsedPostFilter(postFilter);
@@ -545,7 +554,32 @@ public abstract class FilteredSearchContext extends SearchContext {
     }
 
     @Override
-    public InternalAggregation.ReduceContext partial() {
-        return in.partial();
+    public InternalAggregation.ReduceContext partialOnShard() {
+        return in.partialOnShard();
+    }
+
+    @Override
+    public void setBucketCollectorProcessor(BucketCollectorProcessor bucketCollectorProcessor) {
+        in.setBucketCollectorProcessor(bucketCollectorProcessor);
+    }
+
+    @Override
+    public BucketCollectorProcessor bucketCollectorProcessor() {
+        return in.bucketCollectorProcessor();
+    }
+
+    @Override
+    public boolean shouldUseConcurrentSearch() {
+        return in.shouldUseConcurrentSearch();
+    }
+
+    @Override
+    public int getTargetMaxSliceCount() {
+        return in.getTargetMaxSliceCount();
+    }
+
+    @Override
+    public boolean shouldUseTimeSeriesDescSortOptimization() {
+        return in.shouldUseTimeSeriesDescSortOptimization();
     }
 }

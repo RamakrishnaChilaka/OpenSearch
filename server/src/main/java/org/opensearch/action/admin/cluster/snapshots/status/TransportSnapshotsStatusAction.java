@@ -34,7 +34,6 @@ package org.opensearch.action.admin.cluster.snapshots.status;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-import org.opensearch.action.ActionListener;
 import org.opensearch.action.ActionRunnable;
 import org.opensearch.action.StepListener;
 import org.opensearch.action.support.ActionFilters;
@@ -47,11 +46,12 @@ import org.opensearch.cluster.metadata.IndexMetadata;
 import org.opensearch.cluster.metadata.IndexNameExpressionResolver;
 import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.common.inject.Inject;
-import org.opensearch.common.io.stream.StreamInput;
-import org.opensearch.common.util.CollectionUtils;
 import org.opensearch.common.util.set.Sets;
+import org.opensearch.core.action.ActionListener;
 import org.opensearch.core.common.Strings;
-import org.opensearch.index.shard.ShardId;
+import org.opensearch.core.common.io.stream.StreamInput;
+import org.opensearch.core.common.util.CollectionUtils;
+import org.opensearch.core.index.shard.ShardId;
 import org.opensearch.index.snapshots.IndexShardSnapshotStatus;
 import org.opensearch.repositories.IndexId;
 import org.opensearch.repositories.RepositoriesService;
@@ -356,10 +356,10 @@ public class TransportSnapshotsStatusAction extends TransportClusterManagerNodeA
                             state = SnapshotsInProgress.State.FAILED;
                             break;
                         case SUCCESS:
-                        case PARTIAL:
-                            // Translating both PARTIAL and SUCCESS to SUCCESS for now
-                            // TODO: add the differentiation on the metadata level in the next major release
                             state = SnapshotsInProgress.State.SUCCESS;
+                            break;
+                        case PARTIAL:
+                            state = SnapshotsInProgress.State.PARTIAL;
                             break;
                         default:
                             throw new IllegalArgumentException("Unknown snapshot state " + snapshotInfo.state());

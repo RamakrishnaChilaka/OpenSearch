@@ -32,6 +32,7 @@
 
 package org.opensearch.cluster.service;
 
+import org.opensearch.cluster.ClusterManagerMetrics;
 import org.opensearch.cluster.ClusterName;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.ClusterStateApplier;
@@ -45,7 +46,8 @@ import org.opensearch.cluster.NodeConnectionsService;
 import org.opensearch.cluster.node.DiscoveryNode;
 import org.opensearch.cluster.routing.OperationRouting;
 import org.opensearch.cluster.routing.RerouteService;
-import org.opensearch.common.component.AbstractLifecycleComponent;
+import org.opensearch.common.annotation.PublicApi;
+import org.opensearch.common.lifecycle.AbstractLifecycleComponent;
 import org.opensearch.common.settings.ClusterSettings;
 import org.opensearch.common.settings.Setting;
 import org.opensearch.common.settings.Setting.Property;
@@ -60,8 +62,9 @@ import java.util.Map;
 /**
  * Main Cluster Service
  *
- * @opensearch.internal
+ * @opensearch.api
  */
+@PublicApi(since = "1.0.0")
 public class ClusterService extends AbstractLifecycleComponent {
     private final ClusterManagerService clusterManagerService;
 
@@ -89,12 +92,17 @@ public class ClusterService extends AbstractLifecycleComponent {
 
     private IndexingPressureService indexingPressureService;
 
-    public ClusterService(Settings settings, ClusterSettings clusterSettings, ThreadPool threadPool) {
+    public ClusterService(
+        Settings settings,
+        ClusterSettings clusterSettings,
+        ThreadPool threadPool,
+        ClusterManagerMetrics clusterManagerMetrics
+    ) {
         this(
             settings,
             clusterSettings,
-            new ClusterManagerService(settings, clusterSettings, threadPool),
-            new ClusterApplierService(Node.NODE_NAME_SETTING.get(settings), settings, clusterSettings, threadPool)
+            new ClusterManagerService(settings, clusterSettings, threadPool, clusterManagerMetrics),
+            new ClusterApplierService(Node.NODE_NAME_SETTING.get(settings), settings, clusterSettings, threadPool, clusterManagerMetrics)
         );
     }
 

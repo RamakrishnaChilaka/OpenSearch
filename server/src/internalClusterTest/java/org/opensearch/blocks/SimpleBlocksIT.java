@@ -32,13 +32,12 @@
 
 package org.opensearch.blocks;
 
-import org.opensearch.BaseExceptionsHelper;
+import org.opensearch.ExceptionsHelper;
 import org.opensearch.action.ActionRequestValidationException;
 import org.opensearch.action.admin.indices.create.CreateIndexResponse;
 import org.opensearch.action.admin.indices.exists.indices.IndicesExistsResponse;
 import org.opensearch.action.admin.indices.readonly.AddIndexBlockRequestBuilder;
 import org.opensearch.action.admin.indices.settings.put.UpdateSettingsRequestBuilder;
-
 import org.opensearch.action.index.IndexRequestBuilder;
 import org.opensearch.action.index.IndexResponse;
 import org.opensearch.action.support.ActiveShardCount;
@@ -48,6 +47,7 @@ import org.opensearch.cluster.block.ClusterBlockException;
 import org.opensearch.cluster.block.ClusterBlockLevel;
 import org.opensearch.cluster.metadata.IndexMetadata;
 import org.opensearch.cluster.metadata.IndexMetadata.APIBlock;
+import org.opensearch.cluster.metadata.ProcessClusterEventTimeoutException;
 import org.opensearch.cluster.routing.ShardRouting;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.index.IndexNotFoundException;
@@ -428,7 +428,7 @@ public class SimpleBlocksIT extends OpenSearchIntegTestCase {
         try {
             try (BackgroundIndexer indexer = new BackgroundIndexer(indexName, "_doc", client(), 1000)) {
                 indexer.setFailureAssertion(t -> {
-                    Throwable cause = BaseExceptionsHelper.unwrapCause(t);
+                    Throwable cause = ExceptionsHelper.unwrapCause(t);
                     assertThat(cause, instanceOf(ClusterBlockException.class));
                     ClusterBlockException e = (ClusterBlockException) cause;
                     assertThat(e.blocks(), hasSize(1));
@@ -474,7 +474,7 @@ public class SimpleBlocksIT extends OpenSearchIntegTestCase {
         final APIBlock block = randomAddableBlock();
 
         Consumer<Exception> exceptionConsumer = t -> {
-            Throwable cause = BaseExceptionsHelper.unwrapCause(t);
+            Throwable cause = ExceptionsHelper.unwrapCause(t);
             if (cause instanceof ClusterBlockException) {
                 ClusterBlockException e = (ClusterBlockException) cause;
                 assertThat(e.blocks(), hasSize(1));
@@ -492,10 +492,20 @@ public class SimpleBlocksIT extends OpenSearchIntegTestCase {
                     } catch (InterruptedException e) {
                         throw new AssertionError(e);
                     }
-                    try {
-                        assertAcked(client().admin().indices().prepareDelete(indexToDelete));
-                    } catch (final Exception e) {
-                        exceptionConsumer.accept(e);
+                    int pendingRetries = 3;
+                    boolean success = false;
+                    while (success == false && pendingRetries-- > 0) {
+                        try {
+                            assertAcked(client().admin().indices().prepareDelete(indexToDelete));
+                            success = true;
+                        } catch (final Exception e) {
+                            Throwable cause = ExceptionsHelper.unwrapCause(e);
+                            if (cause instanceof ProcessClusterEventTimeoutException && pendingRetries > 0) {
+                                // ignore error & retry
+                                continue;
+                            }
+                            exceptionConsumer.accept(e);
+                        }
                     }
                 }));
             }

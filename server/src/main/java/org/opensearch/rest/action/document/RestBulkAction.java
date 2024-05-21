@@ -97,6 +97,7 @@ public class RestBulkAction extends BaseRestHandler {
         Boolean defaultRequireAlias = request.paramAsBoolean(DocWriteRequest.REQUIRE_ALIAS, null);
         bulkRequest.timeout(request.paramAsTime("timeout", BulkShardRequest.DEFAULT_TIMEOUT));
         bulkRequest.setRefreshPolicy(request.param("refresh"));
+        bulkRequest.batchSize(request.paramAsInt("batch_size", 1));
         bulkRequest.add(
             request.requiredContent(),
             defaultIndex,
@@ -105,7 +106,7 @@ public class RestBulkAction extends BaseRestHandler {
             defaultPipeline,
             defaultRequireAlias,
             allowExplicitIndex,
-            request.getXContentType()
+            request.getMediaType()
         );
 
         return channel -> client.bulk(bulkRequest, new RestStatusToXContentListener<>(channel));

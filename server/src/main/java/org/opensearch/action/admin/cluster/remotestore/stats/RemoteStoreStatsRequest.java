@@ -9,16 +9,18 @@
 package org.opensearch.action.admin.cluster.remotestore.stats;
 
 import org.opensearch.action.support.broadcast.BroadcastRequest;
-import org.opensearch.common.io.stream.StreamInput;
-import org.opensearch.common.io.stream.StreamOutput;
+import org.opensearch.common.annotation.PublicApi;
+import org.opensearch.core.common.io.stream.StreamInput;
+import org.opensearch.core.common.io.stream.StreamOutput;
 
 import java.io.IOException;
 
 /**
  * Encapsulates all remote store stats
  *
- * @opensearch.internal
+ * @opensearch.api
  */
+@PublicApi(since = "2.8.0")
 public class RemoteStoreStatsRequest extends BroadcastRequest<RemoteStoreStatsRequest> {
 
     private String[] shards;

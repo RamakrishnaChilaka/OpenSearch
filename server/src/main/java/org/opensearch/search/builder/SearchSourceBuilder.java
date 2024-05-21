@@ -36,21 +36,23 @@ import org.opensearch.OpenSearchException;
 import org.opensearch.Version;
 import org.opensearch.common.Booleans;
 import org.opensearch.common.Nullable;
-import org.opensearch.common.util.FeatureFlags;
-import org.opensearch.common.ParsingException;
-import org.opensearch.common.io.stream.StreamInput;
-import org.opensearch.common.io.stream.StreamOutput;
-import org.opensearch.common.io.stream.Writeable;
+import org.opensearch.common.annotation.PublicApi;
 import org.opensearch.common.logging.DeprecationLogger;
 import org.opensearch.common.unit.TimeValue;
-import org.opensearch.common.xcontent.XContentHelper;
-import org.opensearch.common.xcontent.XContentType;
-import org.opensearch.core.common.Strings;
 import org.opensearch.core.ParseField;
+import org.opensearch.core.common.ParsingException;
+import org.opensearch.core.common.Strings;
+import org.opensearch.core.common.io.stream.StreamInput;
+import org.opensearch.core.common.io.stream.StreamOutput;
+import org.opensearch.core.common.io.stream.Writeable;
+import org.opensearch.core.xcontent.MediaTypeRegistry;
 import org.opensearch.core.xcontent.ToXContentFragment;
 import org.opensearch.core.xcontent.ToXContentObject;
 import org.opensearch.core.xcontent.XContentBuilder;
+import org.opensearch.core.xcontent.XContentHelper;
 import org.opensearch.core.xcontent.XContentParser;
+import org.opensearch.index.mapper.DerivedField;
+import org.opensearch.index.mapper.DerivedFieldMapper;
 import org.opensearch.index.query.QueryBuilder;
 import org.opensearch.index.query.QueryRewriteContext;
 import org.opensearch.index.query.Rewriteable;
@@ -92,8 +94,9 @@ import static org.opensearch.search.internal.SearchContext.TRACK_TOTAL_HITS_DISA
  *
  * @see org.opensearch.action.search.SearchRequest#source(SearchSourceBuilder)
  *
- * @opensearch.internal
+ * @opensearch.api
  */
+@PublicApi(since = "1.0.0")
 public final class SearchSourceBuilder implements Writeable, ToXContentObject, Rewriteable<SearchSourceBuilder> {
     private static final DeprecationLogger deprecationLogger = DeprecationLogger.getLogger(SearchSourceBuilder.class);
 
@@ -112,10 +115,12 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
     public static final ParseField DOCVALUE_FIELDS_FIELD = new ParseField("docvalue_fields");
     public static final ParseField FETCH_FIELDS_FIELD = new ParseField("fields");
     public static final ParseField SCRIPT_FIELDS_FIELD = new ParseField("script_fields");
+    public static final ParseField DERIVED_FIELDS_FIELD = new ParseField(DerivedFieldMapper.CONTENT_TYPE);
     public static final ParseField SCRIPT_FIELD = new ParseField("script");
     public static final ParseField IGNORE_FAILURE_FIELD = new ParseField("ignore_failure");
     public static final ParseField SORT_FIELD = new ParseField("sort");
     public static final ParseField TRACK_SCORES_FIELD = new ParseField("track_scores");
+    public static final ParseField INCLUDE_NAMED_QUERIES_SCORE = new ParseField("include_named_queries_score");
     public static final ParseField TRACK_TOTAL_HITS_FIELD = new ParseField("track_total_hits");
     public static final ParseField INDICES_BOOST_FIELD = new ParseField("indices_boost");
     public static final ParseField AGGREGATIONS_FIELD = new ParseField("aggregations");
@@ -174,6 +179,8 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
 
     private boolean trackScores = false;
 
+    private Boolean includeNamedQueriesScore;
+
     private Integer trackTotalHitsUpTo;
 
     private SearchAfterBuilder searchAfterBuilder;
@@ -188,6 +195,10 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
     private StoredFieldsContext storedFieldsContext;
     private List<FieldAndFormat> docValueFields;
     private List<ScriptField> scriptFields;
+    private Map<String, Object> derivedFieldsObject;
+
+    private List<DerivedField> derivedFields;
+
     private FetchSourceContext fetchSourceContext;
     private List<FieldAndFormat> fetchFields;
 
@@ -275,6 +286,17 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
                 searchPipelineSource = in.readMap();
             }
         }
+        if (in.getVersion().onOrAfter(Version.V_2_13_0)) {
+            includeNamedQueriesScore = in.readOptionalBoolean();
+        }
+        if (in.getVersion().onOrAfter(Version.V_2_14_0)) {
+            if (in.readBoolean()) {
+                derivedFieldsObject = in.readMap();
+            }
+            if (in.readBoolean()) {
+                derivedFields = in.readList(DerivedField::new);
+            }
+        }
     }
 
     @Override
@@ -340,6 +362,21 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
                 out.writeMap(searchPipelineSource);
             }
         }
+        if (out.getVersion().onOrAfter(Version.V_2_13_0)) {
+            out.writeOptionalBoolean(includeNamedQueriesScore);
+        }
+        if (out.getVersion().onOrAfter(Version.V_2_14_0)) {
+            boolean hasDerivedFieldsObject = derivedFieldsObject != null;
+            out.writeBoolean(hasDerivedFieldsObject);
+            if (hasDerivedFieldsObject) {
+                out.writeMap(derivedFieldsObject);
+            }
+            boolean hasDerivedFields = derivedFields != null;
+            out.writeBoolean(hasDerivedFields);
+            if (hasDerivedFields) {
+                out.writeList(derivedFields);
+            }
+        }
     }
 
     /**
@@ -381,7 +418,7 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
      */
     public SearchSourceBuilder from(int from) {
         if (from < 0) {
-            throw new IllegalArgumentException("[from] parameter cannot be negative");
+            throw new IllegalArgumentException("[from] parameter cannot be negative, found [" + from + "]");
         }
         this.from = from;
         return this;
@@ -565,6 +602,22 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
     public SearchSourceBuilder trackScores(boolean trackScores) {
         this.trackScores = trackScores;
         return this;
+    }
+
+    /**
+     * Applies when there are named queries, to return the scores along as well
+     * Defaults to {@code false}.
+     */
+    public SearchSourceBuilder includeNamedQueriesScores(boolean includeNamedQueriesScore) {
+        this.includeNamedQueriesScore = includeNamedQueriesScore;
+        return this;
+    }
+
+    /**
+     * Indicates whether scores will be returned as part of every search matched query.s
+     */
+    public boolean includeNamedQueriesScore() {
+        return includeNamedQueriesScore != null && includeNamedQueriesScore;
     }
 
     /**
@@ -929,6 +982,28 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
         return scriptFields;
     }
 
+    public Map<String, Object> getDerivedFieldsObject() {
+        return derivedFieldsObject;
+    }
+
+    public List<DerivedField> getDerivedFields() {
+        return derivedFields;
+    }
+
+    /**
+     * Adds a derived field with the given name with provided type and script
+     * @param name name of the derived field
+     * @param type type of the derived field
+     * @param script script associated with derived field
+     */
+    public SearchSourceBuilder derivedField(String name, String type, Script script) {
+        if (derivedFields == null) {
+            derivedFields = new ArrayList<>();
+        }
+        derivedFields.add(new DerivedField(name, type, script));
+        return this;
+    }
+
     /**
      * Sets the boost a specific index or alias will receive when the query is executed
      * against it.
@@ -1102,11 +1177,14 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
         rewrittenBuilder.terminateAfter = terminateAfter;
         rewrittenBuilder.timeout = timeout;
         rewrittenBuilder.trackScores = trackScores;
+        rewrittenBuilder.includeNamedQueriesScore = includeNamedQueriesScore;
         rewrittenBuilder.trackTotalHitsUpTo = trackTotalHitsUpTo;
         rewrittenBuilder.version = version;
         rewrittenBuilder.seqNoAndPrimaryTerm = seqNoAndPrimaryTerm;
         rewrittenBuilder.collapse = collapse;
         rewrittenBuilder.pointInTimeBuilder = pointInTimeBuilder;
+        rewrittenBuilder.derivedFieldsObject = derivedFieldsObject;
+        rewrittenBuilder.derivedFields = derivedFields;
         return rewrittenBuilder;
     }
 
@@ -1137,9 +1215,9 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
                 currentFieldName = parser.currentName();
             } else if (token.isValue()) {
                 if (FROM_FIELD.match(currentFieldName, parser.getDeprecationHandler())) {
-                    from = parser.intValue();
+                    from(parser.intValue());
                 } else if (SIZE_FIELD.match(currentFieldName, parser.getDeprecationHandler())) {
-                    size = parser.intValue();
+                    size(parser.intValue());
                 } else if (TIMEOUT_FIELD.match(currentFieldName, parser.getDeprecationHandler())) {
                     timeout = TimeValue.parseTimeValue(parser.text(), null, TIMEOUT_FIELD.getPreferredName());
                 } else if (TERMINATE_AFTER_FIELD.match(currentFieldName, parser.getDeprecationHandler())) {
@@ -1154,6 +1232,8 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
                     explain = parser.booleanValue();
                 } else if (TRACK_SCORES_FIELD.match(currentFieldName, parser.getDeprecationHandler())) {
                     trackScores = parser.booleanValue();
+                } else if (INCLUDE_NAMED_QUERIES_SCORE.match(currentFieldName, parser.getDeprecationHandler())) {
+                    includeNamedQueriesScore = parser.booleanValue();
                 } else if (TRACK_TOTAL_HITS_FIELD.match(currentFieldName, parser.getDeprecationHandler())) {
                     if (token == XContentParser.Token.VALUE_BOOLEAN
                         || (token == XContentParser.Token.VALUE_STRING && Booleans.isBoolean(parser.text()))) {
@@ -1250,16 +1330,17 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
                         collapse = CollapseBuilder.fromXContent(parser);
                     } else if (POINT_IN_TIME.match(currentFieldName, parser.getDeprecationHandler())) {
                         pointInTimeBuilder = PointInTimeBuilder.fromXContent(parser);
-                    } else if (FeatureFlags.isEnabled(FeatureFlags.SEARCH_PIPELINE)
-                        && SEARCH_PIPELINE.match(currentFieldName, parser.getDeprecationHandler())) {
-                            searchPipelineSource = parser.mapOrdered();
-                        } else {
-                            throw new ParsingException(
-                                parser.getTokenLocation(),
-                                "Unknown key for a " + token + " in [" + currentFieldName + "].",
-                                parser.getTokenLocation()
-                            );
-                        }
+                    } else if (SEARCH_PIPELINE.match(currentFieldName, parser.getDeprecationHandler())) {
+                        searchPipelineSource = parser.mapOrdered();
+                    } else if (DERIVED_FIELDS_FIELD.match(currentFieldName, parser.getDeprecationHandler())) {
+                        derivedFieldsObject = parser.map();
+                    } else {
+                        throw new ParsingException(
+                            parser.getTokenLocation(),
+                            "Unknown key for a " + token + " in [" + currentFieldName + "].",
+                            parser.getTokenLocation()
+                        );
+                    }
             } else if (token == XContentParser.Token.START_ARRAY) {
                 if (STORED_FIELDS_FIELD.match(currentFieldName, parser.getDeprecationHandler())) {
                     storedFieldsContext = StoredFieldsContext.fromXContent(STORED_FIELDS_FIELD.getPreferredName(), parser);
@@ -1418,6 +1499,10 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
             builder.field(TRACK_SCORES_FIELD.getPreferredName(), true);
         }
 
+        if (includeNamedQueriesScore != null) {
+            builder.field(INCLUDE_NAMED_QUERIES_SCORE.getPreferredName(), includeNamedQueriesScore);
+        }
+
         if (trackTotalHitsUpTo != null) {
             builder.field(TRACK_TOTAL_HITS_FIELD.getPreferredName(), trackTotalHitsUpTo);
         }
@@ -1481,6 +1566,21 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
         if (searchPipelineSource != null) {
             builder.field(SEARCH_PIPELINE.getPreferredName(), searchPipelineSource);
         }
+
+        if (derivedFieldsObject != null || derivedFields != null) {
+            builder.startObject(DERIVED_FIELDS_FIELD.getPreferredName());
+            if (derivedFieldsObject != null) {
+                builder.mapContents(derivedFieldsObject);
+            }
+            if (derivedFields != null) {
+                for (DerivedField derivedField : derivedFields) {
+                    derivedField.toXContent(builder, params);
+                }
+            }
+            builder.endObject();
+
+        }
+
         return builder;
     }
 
@@ -1495,8 +1595,9 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
     /**
      * Boosts on an index
      *
-     * @opensearch.internal
+     * @opensearch.api
      */
+    @PublicApi(since = "1.0.0")
     public static class IndexBoost implements Writeable, ToXContentObject {
         private final String index;
         private final float boost;
@@ -1596,8 +1697,9 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
     /**
      * Script field
      *
-     * @opensearch.internal
+     * @opensearch.api
      */
+    @PublicApi(since = "1.0.0")
     public static class ScriptField implements Writeable, ToXContentFragment {
 
         private final boolean ignoreFailure;
@@ -1747,13 +1849,16 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
             terminateAfter,
             timeout,
             trackScores,
+            includeNamedQueriesScore,
             version,
             seqNoAndPrimaryTerm,
             profile,
             extBuilders,
             collapse,
             trackTotalHitsUpTo,
-            pointInTimeBuilder
+            pointInTimeBuilder,
+            derivedFieldsObject,
+            derivedFields
         );
     }
 
@@ -1789,13 +1894,16 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
             && Objects.equals(terminateAfter, other.terminateAfter)
             && Objects.equals(timeout, other.timeout)
             && Objects.equals(trackScores, other.trackScores)
+            && Objects.equals(includeNamedQueriesScore, other.includeNamedQueriesScore)
             && Objects.equals(version, other.version)
             && Objects.equals(seqNoAndPrimaryTerm, other.seqNoAndPrimaryTerm)
             && Objects.equals(profile, other.profile)
             && Objects.equals(extBuilders, other.extBuilders)
             && Objects.equals(collapse, other.collapse)
             && Objects.equals(trackTotalHitsUpTo, other.trackTotalHitsUpTo)
-            && Objects.equals(pointInTimeBuilder, other.pointInTimeBuilder);
+            && Objects.equals(pointInTimeBuilder, other.pointInTimeBuilder)
+            && Objects.equals(derivedFieldsObject, other.derivedFieldsObject)
+            && Objects.equals(derivedFields, other.derivedFields);
     }
 
     @Override
@@ -1805,8 +1913,8 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
 
     public String toString(Params params) {
         try {
-            return XContentHelper.toXContent(this, XContentType.JSON, params, true).utf8ToString();
-        } catch (IOException e) {
+            return XContentHelper.toXContent(this, MediaTypeRegistry.JSON, params, true).utf8ToString();
+        } catch (IOException | UnsupportedOperationException e) {
             throw new OpenSearchException(e);
         }
     }

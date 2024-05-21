@@ -32,19 +32,19 @@
 
 package org.opensearch.action.search;
 
-import org.opensearch.BaseOpenSearchException;
-import org.opensearch.OpenSearchException;
 import org.opensearch.ExceptionsHelper;
-import org.opensearch.action.ActionResponse;
+import org.opensearch.OpenSearchException;
 import org.opensearch.common.Nullable;
-import org.opensearch.common.Strings;
-import org.opensearch.common.io.stream.StreamInput;
-import org.opensearch.common.io.stream.StreamOutput;
-import org.opensearch.common.io.stream.Writeable;
+import org.opensearch.common.annotation.PublicApi;
 import org.opensearch.common.unit.TimeValue;
-import org.opensearch.common.xcontent.XContentType;
 import org.opensearch.core.ParseField;
+import org.opensearch.core.action.ActionResponse;
+import org.opensearch.core.common.Strings;
+import org.opensearch.core.common.io.stream.StreamInput;
+import org.opensearch.core.common.io.stream.StreamOutput;
+import org.opensearch.core.common.io.stream.Writeable;
 import org.opensearch.core.xcontent.ConstructingObjectParser;
+import org.opensearch.core.xcontent.MediaTypeRegistry;
 import org.opensearch.core.xcontent.ToXContentObject;
 import org.opensearch.core.xcontent.XContentBuilder;
 import org.opensearch.core.xcontent.XContentParser;
@@ -60,8 +60,9 @@ import static org.opensearch.core.xcontent.ConstructingObjectParser.constructorA
 /**
  * A multi search response.
  *
- * @opensearch.internal
+ * @opensearch.api
  */
+@PublicApi(since = "1.0.0")
 public class MultiSearchResponse extends ActionResponse implements Iterable<MultiSearchResponse.Item>, ToXContentObject {
 
     private static final ParseField RESPONSES = new ParseField(Fields.RESPONSES);
@@ -79,8 +80,9 @@ public class MultiSearchResponse extends ActionResponse implements Iterable<Mult
     /**
      * A search response item, holding the actual search response, or an error message if it failed.
      *
-     * @opensearch.internal
+     * @opensearch.api
      */
+    @PublicApi(since = "1.0.0")
     public static class Item implements Writeable {
         private final SearchResponse response;
         private final Exception exception;
@@ -192,7 +194,7 @@ public class MultiSearchResponse extends ActionResponse implements Iterable<Mult
         for (Item item : items) {
             builder.startObject();
             if (item.isFailure()) {
-                BaseOpenSearchException.generateFailureXContent(builder, params, item.getFailure(), true);
+                OpenSearchException.generateFailureXContent(builder, params, item.getFailure(), true);
                 builder.field(Fields.STATUS, ExceptionsHelper.status(item.getFailure()).getStatus());
             } else {
                 item.getResponse().innerToXContent(builder, params);
@@ -256,6 +258,6 @@ public class MultiSearchResponse extends ActionResponse implements Iterable<Mult
 
     @Override
     public String toString() {
-        return Strings.toString(XContentType.JSON, this);
+        return Strings.toString(MediaTypeRegistry.JSON, this);
     }
 }

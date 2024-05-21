@@ -9,27 +9,28 @@
 package org.opensearch.search.pipeline.common;
 
 import org.opensearch.action.search.SearchRequest;
-
 import org.opensearch.common.Nullable;
-import org.opensearch.common.bytes.BytesReference;
 import org.opensearch.common.xcontent.LoggingDeprecationHandler;
+import org.opensearch.common.xcontent.json.JsonXContent;
+import org.opensearch.core.common.bytes.BytesReference;
+import org.opensearch.core.xcontent.MediaTypeRegistry;
 import org.opensearch.core.xcontent.NamedXContentRegistry;
 import org.opensearch.core.xcontent.XContentBuilder;
 import org.opensearch.core.xcontent.XContentParser;
-import org.opensearch.common.xcontent.XContentType;
-import org.opensearch.common.xcontent.json.JsonXContent;
-
 import org.opensearch.script.Script;
 import org.opensearch.script.ScriptException;
 import org.opensearch.script.ScriptService;
 import org.opensearch.script.ScriptType;
 import org.opensearch.script.SearchScript;
+import org.opensearch.search.pipeline.AbstractProcessor;
+import org.opensearch.search.pipeline.PipelineProcessingContext;
 import org.opensearch.search.pipeline.Processor;
 import org.opensearch.search.pipeline.SearchRequestProcessor;
-import org.opensearch.search.pipeline.common.helpers.SearchRequestMap;
+import org.opensearch.search.pipeline.StatefulSearchRequestProcessor;
 
 import java.io.InputStream;
-import java.util.Arrays;
+import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import static org.opensearch.ingest.ConfigurationUtils.newConfigurationException;
@@ -38,7 +39,7 @@ import static org.opensearch.ingest.ConfigurationUtils.newConfigurationException
  * Processor that evaluates a script with a search request in its context
  * and then returns the modified search request.
  */
-public final class ScriptRequestProcessor extends AbstractProcessor implements SearchRequestProcessor {
+public final class ScriptRequestProcessor extends AbstractProcessor implements StatefulSearchRequestProcessor {
     /**
      * Key to reference this processor type from a search pipeline.
      */
@@ -53,6 +54,7 @@ public final class ScriptRequestProcessor extends AbstractProcessor implements S
      *
      * @param tag The processor's tag.
      * @param description The processor's description.
+     * @param ignoreFailure The option to ignore failure
      * @param script The {@link Script} to execute.
      * @param precompiledSearchScript The {@link Script} precompiled
      * @param scriptService The {@link ScriptService} used to execute the script.
@@ -60,25 +62,19 @@ public final class ScriptRequestProcessor extends AbstractProcessor implements S
     ScriptRequestProcessor(
         String tag,
         String description,
+        boolean ignoreFailure,
         Script script,
         @Nullable SearchScript precompiledSearchScript,
         ScriptService scriptService
     ) {
-        super(tag, description);
+        super(tag, description, ignoreFailure);
         this.script = script;
         this.precompiledSearchScript = precompiledSearchScript;
         this.scriptService = scriptService;
     }
 
-    /**
-     * Executes the script with the search request in context.
-     *
-     * @param request The search request passed into the script context.
-     * @return The modified search request.
-     * @throws Exception if an error occurs while processing the request.
-     */
     @Override
-    public SearchRequest processRequest(SearchRequest request) throws Exception {
+    public SearchRequest processRequest(SearchRequest request, PipelineProcessingContext requestContext) throws Exception {
         // assert request is not null and source is not null
         if (request == null || request.source() == null) {
             throw new IllegalArgumentException("search request must not be null");
@@ -91,8 +87,31 @@ public final class ScriptRequestProcessor extends AbstractProcessor implements S
             searchScript = precompiledSearchScript;
         }
         // execute the script with the search request in context
-        searchScript.execute(Map.of("_source", new SearchRequestMap(request)));
+        searchScript.execute(Map.of("_source", new SearchRequestMap(request), "request_context", new RequestContextMap(requestContext)));
         return request;
+    }
+
+    private static class RequestContextMap extends BasicMap {
+        private final PipelineProcessingContext pipelinedRequestContext;
+
+        private RequestContextMap(PipelineProcessingContext pipelinedRequestContext) {
+            this.pipelinedRequestContext = pipelinedRequestContext;
+        }
+
+        @Override
+        public Object get(Object key) {
+            if (key instanceof String) {
+                return pipelinedRequestContext.getAttribute(key.toString());
+            }
+            return null;
+        }
+
+        @Override
+        public Object put(String key, Object value) {
+            Object originalValue = get(key);
+            pipelinedRequestContext.setAttribute(key, value);
+            return originalValue;
+        }
     }
 
     /**
@@ -127,6 +146,8 @@ public final class ScriptRequestProcessor extends AbstractProcessor implements S
      * Factory class for creating {@link ScriptRequestProcessor}.
      */
     public static final class Factory implements Processor.Factory<SearchRequestProcessor> {
+        private static final List<String> SCRIPT_CONFIG_KEYS = List.of("id", "source", "inline", "lang", "params", "options");
+
         private final ScriptService scriptService;
 
         /**
@@ -138,32 +159,29 @@ public final class ScriptRequestProcessor extends AbstractProcessor implements S
             this.scriptService = scriptService;
         }
 
-        /**
-         * Creates a new instance of {@link ScriptRequestProcessor}.
-         *
-         * @param registry The registry of processor factories.
-         * @param processorTag The processor's tag.
-         * @param description The processor's description.
-         * @param config The configuration options for the processor.
-         * @return The created {@link ScriptRequestProcessor} instance.
-         * @throws Exception if an error occurs during the creation process.
-         */
         @Override
         public ScriptRequestProcessor create(
             Map<String, Processor.Factory<SearchRequestProcessor>> registry,
             String processorTag,
             String description,
-            Map<String, Object> config
+            boolean ignoreFailure,
+            Map<String, Object> config,
+            PipelineContext pipelineContext
         ) throws Exception {
+            Map<String, Object> scriptConfig = new HashMap<>();
+            for (String key : SCRIPT_CONFIG_KEYS) {
+                Object val = config.remove(key);
+                if (val != null) {
+                    scriptConfig.put(key, val);
+                }
+            }
             try (
-                XContentBuilder builder = XContentBuilder.builder(JsonXContent.jsonXContent).map(config);
+                XContentBuilder builder = XContentBuilder.builder(JsonXContent.jsonXContent).map(scriptConfig);
                 InputStream stream = BytesReference.bytes(builder).streamInput();
-                XContentParser parser = XContentType.JSON.xContent()
+                XContentParser parser = MediaTypeRegistry.JSON.xContent()
                     .createParser(NamedXContentRegistry.EMPTY, LoggingDeprecationHandler.INSTANCE, stream)
             ) {
                 Script script = Script.parse(parser);
-
-                Arrays.asList("id", "source", "inline", "lang", "params", "options").forEach(config::remove);
 
                 // verify script is able to be compiled before successfully creating processor.
                 SearchScript searchScript = null;
@@ -175,7 +193,7 @@ public final class ScriptRequestProcessor extends AbstractProcessor implements S
                 } catch (ScriptException e) {
                     throw newConfigurationException(TYPE, processorTag, null, e);
                 }
-                return new ScriptRequestProcessor(processorTag, description, script, searchScript, scriptService);
+                return new ScriptRequestProcessor(processorTag, description, ignoreFailure, script, searchScript, scriptService);
             }
         }
     }

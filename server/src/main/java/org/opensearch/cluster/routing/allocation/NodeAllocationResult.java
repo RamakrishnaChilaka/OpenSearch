@@ -32,14 +32,15 @@
 
 package org.opensearch.cluster.routing.allocation;
 
-import org.opensearch.BaseExceptionsHelper;
+import org.opensearch.OpenSearchException;
 import org.opensearch.cluster.node.DiscoveryNode;
 import org.opensearch.cluster.routing.allocation.decider.Decision;
 import org.opensearch.common.Nullable;
-import org.opensearch.common.io.stream.StreamInput;
-import org.opensearch.common.io.stream.StreamOutput;
-import org.opensearch.common.io.stream.Writeable;
-import org.opensearch.common.unit.ByteSizeValue;
+import org.opensearch.common.annotation.PublicApi;
+import org.opensearch.core.common.io.stream.StreamInput;
+import org.opensearch.core.common.io.stream.StreamOutput;
+import org.opensearch.core.common.io.stream.Writeable;
+import org.opensearch.core.common.unit.ByteSizeValue;
 import org.opensearch.core.xcontent.ToXContentFragment;
 import org.opensearch.core.xcontent.ToXContentObject;
 import org.opensearch.core.xcontent.XContentBuilder;
@@ -52,8 +53,9 @@ import static org.opensearch.cluster.routing.allocation.AbstractAllocationDecisi
 /**
  * This class represents the shard allocation decision and its explanation for a single node.
  *
- * @opensearch.internal
+ * @opensearch.api
  */
+@PublicApi(since = "1.0.0")
 public class NodeAllocationResult implements ToXContentObject, Writeable, Comparable<NodeAllocationResult> {
 
     private static final Comparator<NodeAllocationResult> nodeResultComparator = Comparator.comparing(NodeAllocationResult::getNodeDecision)
@@ -191,8 +193,9 @@ public class NodeAllocationResult implements ToXContentObject, Writeable, Compar
     /**
      * A class that captures metadata about a shard store on a node.
      *
-     * @opensearch.internal
+     * @opensearch.api
      */
+    @PublicApi(since = "1.0.0")
     public static final class ShardStoreInfo implements ToXContentFragment, Writeable {
         private final boolean inSync;
         @Nullable
@@ -300,7 +303,7 @@ public class NodeAllocationResult implements ToXContentObject, Writeable, Compar
                 }
                 if (storeException != null) {
                     builder.startObject("store_exception");
-                    BaseExceptionsHelper.generateThrowableXContent(builder, params, storeException);
+                    OpenSearchException.generateThrowableXContent(builder, params, storeException);
                     builder.endObject();
                 }
             }

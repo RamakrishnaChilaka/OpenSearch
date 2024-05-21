@@ -32,12 +32,13 @@
 
 package org.opensearch.action.termvectors;
 
-import org.opensearch.BaseOpenSearchException;
+import org.opensearch.OpenSearchException;
 import org.opensearch.Version;
-import org.opensearch.action.ActionResponse;
-import org.opensearch.common.io.stream.StreamInput;
-import org.opensearch.common.io.stream.StreamOutput;
-import org.opensearch.common.io.stream.Writeable;
+import org.opensearch.common.annotation.PublicApi;
+import org.opensearch.core.action.ActionResponse;
+import org.opensearch.core.common.io.stream.StreamInput;
+import org.opensearch.core.common.io.stream.StreamOutput;
+import org.opensearch.core.common.io.stream.Writeable;
 import org.opensearch.core.xcontent.ToXContentObject;
 import org.opensearch.core.xcontent.XContentBuilder;
 
@@ -48,15 +49,17 @@ import java.util.Iterator;
 /**
  * A multi get response.
  *
- * @opensearch.internal
+ * @opensearch.api
  */
+@PublicApi(since = "1.0.0")
 public class MultiTermVectorsResponse extends ActionResponse implements Iterable<MultiTermVectorsItemResponse>, ToXContentObject {
 
     /**
      * Represents a failure.
      *
-     * @opensearch.internal
+     * @opensearch.api
      */
+    @PublicApi(since = "1.0.0")
     public static class Failure implements Writeable {
         private final String index;
         private final String id;
@@ -141,7 +144,7 @@ public class MultiTermVectorsResponse extends ActionResponse implements Iterable
                 Failure failure = response.getFailure();
                 builder.field(Fields._INDEX, failure.getIndex());
                 builder.field(Fields._ID, failure.getId());
-                BaseOpenSearchException.generateFailureXContent(builder, params, failure.getCause(), true);
+                OpenSearchException.generateFailureXContent(builder, params, failure.getCause(), true);
                 builder.endObject();
             } else {
                 TermVectorsResponse getResponse = response.getResponse();

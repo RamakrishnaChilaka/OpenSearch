@@ -11,8 +11,8 @@ package org.opensearch.indices.replication;
 import org.opensearch.cluster.node.DiscoveryNode;
 import org.opensearch.cluster.routing.ShardRouting;
 import org.opensearch.cluster.service.ClusterService;
+import org.opensearch.core.index.shard.ShardId;
 import org.opensearch.index.shard.IndexShard;
-import org.opensearch.index.shard.ShardId;
 import org.opensearch.indices.recovery.RecoverySettings;
 import org.opensearch.transport.TransportService;
 
@@ -38,7 +38,7 @@ public class SegmentReplicationSourceFactory {
     }
 
     public SegmentReplicationSource get(IndexShard shard) {
-        if (shard.indexSettings().isSegRepWithRemoteEnabled()) {
+        if (shard.indexSettings().isAssignedOnRemoteNode()) {
             return new RemoteStoreReplicationSource(shard);
         } else {
             return new PrimaryShardReplicationSource(

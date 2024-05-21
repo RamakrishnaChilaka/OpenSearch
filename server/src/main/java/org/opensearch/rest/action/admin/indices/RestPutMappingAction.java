@@ -66,10 +66,10 @@ public class RestPutMappingAction extends BaseRestHandler {
     public List<Route> routes() {
         return unmodifiableList(
             asList(
-                new Route(POST, "/{index}/_mapping/"),
-                new Route(PUT, "/{index}/_mapping/"),
-                new Route(POST, "/{index}/_mappings/"),
-                new Route(PUT, "/{index}/_mappings/")
+                new Route(POST, "/{index}/_mapping"),
+                new Route(PUT, "/{index}/_mapping"),
+                new Route(POST, "/{index}/_mappings"),
+                new Route(PUT, "/{index}/_mappings")
             )
         );
     }
@@ -83,7 +83,7 @@ public class RestPutMappingAction extends BaseRestHandler {
     public RestChannelConsumer prepareRequest(final RestRequest request, final NodeClient client) throws IOException {
 
         PutMappingRequest putMappingRequest = putMappingRequest(Strings.splitStringByCommaToArray(request.param("index")));
-        Map<String, Object> sourceAsMap = XContentHelper.convertToMap(request.requiredContent(), false, request.getXContentType()).v2();
+        Map<String, Object> sourceAsMap = XContentHelper.convertToMap(request.requiredContent(), false, request.getMediaType()).v2();
 
         if (MapperService.isMappingSourceTyped(MapperService.SINGLE_MAPPING_NAME, sourceAsMap)) {
             throw new IllegalArgumentException("Types cannot be provided in put mapping requests");
